@@ -34,7 +34,7 @@ export default function LoginScreen() {
 
           <div className="relative z-10 max-w-md">
             <p className="text-xs uppercase tracking-[0.2em] text-chalk-300 mb-4 font-medium">
-              Equipment Catalog
+              Deal Builder
             </p>
             <h1 className="text-4xl xl:text-5xl font-light leading-tight mb-6 text-chalk-50">
               The single source of truth for every machine we sell.

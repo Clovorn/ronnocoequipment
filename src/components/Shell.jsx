@@ -38,7 +38,7 @@ export default function Shell({ profile, session, routeName, navigate, children 
             <div className="hidden md:block h-6 w-px bg-chalk-50/15" />
             <div className="hidden md:block">
               <div className="text-xs uppercase tracking-[0.18em] text-chalk-300 group-hover:text-chalk-50 transition-colors font-medium">
-                Equipment Catalog
+                Deal Builder
               </div>
             </div>
           </button>

@@ -1,6 +1,6 @@
-# Ronnoco Equipment Catalog Dashboard
+# Ronnoco Deal Builder
 
-Internal dashboard for browsing, searching, and managing the Ronnoco equipment catalog.
+Internal app for browsing the Ronnoco equipment catalog, building deals, and submitting them to the deal pipeline.
 Built on Supabase (catalog project `hthpngozynonzokhbpej`).
 
 ## Quick start (local)

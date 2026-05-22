@@ -143,7 +143,7 @@ export default function UserMenu({ profile, session, navigate, isAdmin }) {
 
           {/* Footer */}
           <div className="px-4 py-2 bg-page-50 border-t border-page-100 text-[10px] text-slate-500 flex justify-between">
-            <span>Ronnoco Equipment Catalog</span>
+            <span>Ronnoco Deal Builder</span>
             <span className="font-mono">v0.3</span>
           </div>
         </div>
