@@ -12,6 +12,7 @@ import AnnouncementsAdmin from './components/admin/AnnouncementsAdmin.jsx';
 import BundlesAdmin from './components/admin/BundlesAdmin.jsx';
 import VendorsAdmin from './components/admin/VendorsAdmin.jsx';
 import HeroAdmin from './components/admin/HeroAdmin.jsx';
+import DealBuilder from './components/DealBuilder.jsx';
 import RonnocoLogo from './components/RonnocoLogo.jsx';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -87,6 +88,10 @@ export default function App() {
 
       {route.name === 'vendors' && (
         <VendorsDirectory navigate={navigate} />
+      )}
+
+      {route.name === 'deal' && (
+        <DealBuilder profile={profile} session={session} navigate={navigate} />
       )}
 
       {route.name === 'admin' && isAdmin && (

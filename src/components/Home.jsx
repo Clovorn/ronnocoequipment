@@ -120,7 +120,14 @@ export default function Home({ navigate, profile }) {
         <h2 className="text-lg md:text-xl font-light text-slate-900 mb-4">
           Quick links
         </h2>
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 md:gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+          <QuickLink
+            title="New deal"
+            description="Build a deal sheet — equipment, customer, distribution."
+            onClick={() => navigate('deal')}
+            icon={DealIcon}
+            emphasized
+          />
           <QuickLink
             title="Full catalog"
             description="Search 259 items by SKU, model, vendor, or category."
@@ -192,19 +199,23 @@ function AnnouncementCard({ item, accent }) {
   );
 }
 
-function QuickLink({ title, description, onClick, icon: Icon }) {
+function QuickLink({ title, description, onClick, icon: Icon, emphasized = false }) {
   return (
     <button onClick={onClick}
-            className="text-left bg-white border border-page-200 rounded-lg p-4 md:p-5
-                       hover:border-navy-300 hover:shadow-card active:bg-navy-50
-                       transition-all">
+            className={`text-left rounded-lg p-4 md:p-5 transition-all
+                       ${emphasized
+                         ? 'bg-navy-900 text-chalk-50 border border-navy-900 hover:bg-navy-800 active:bg-navy-950 shadow-card'
+                         : 'bg-white border border-page-200 hover:border-navy-300 hover:shadow-card active:bg-navy-50'}`}>
       <div className="flex items-start gap-3">
-        <div className="w-9 h-9 rounded-lg bg-navy-900 text-chalk-50 flex items-center justify-center flex-shrink-0">
+        <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0
+                         ${emphasized
+                           ? 'bg-white/15 text-chalk-50'
+                           : 'bg-navy-900 text-chalk-50'}`}>
           <Icon />
         </div>
         <div className="min-w-0">
-          <h3 className="text-sm font-medium text-slate-900 mb-0.5">{title}</h3>
-          <p className="text-xs text-slate-600 leading-relaxed">{description}</p>
+          <h3 className={`text-sm font-medium mb-0.5 ${emphasized ? 'text-chalk-50' : 'text-slate-900'}`}>{title}</h3>
+          <p className={`text-xs leading-relaxed ${emphasized ? 'text-chalk-200' : 'text-slate-600'}`}>{description}</p>
         </div>
       </div>
     </button>
@@ -222,6 +233,14 @@ function BundlesIcon() {
   return (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+    </svg>
+  );
+}
+function DealIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2v6h6M9 13l2 2 4-4" />
     </svg>
   );
 }

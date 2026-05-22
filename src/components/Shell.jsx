@@ -5,6 +5,7 @@ const TABS = [
   { key: 'home',       label: 'Home',       routeName: 'home',       icon: HomeIcon },
   { key: 'catalog',    label: 'Catalog',    routeName: 'catalog',    icon: CatalogIcon },
   { key: 'bundles',    label: 'Bundles',    routeName: 'bundles',    icon: BundlesIcon },
+  { key: 'deal',       label: 'New Deal',   routeName: 'deal',       icon: DealIcon },
   { key: 'favorites',  label: 'Favorites',  routeName: 'favorites',  icon: StarIcon },
 ];
 
@@ -126,6 +127,14 @@ function BundlesIcon({ active }) {
   return (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+    </svg>
+  );
+}
+function DealIcon({ active }) {
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2v6h6M9 13l2 2 4-4" />
     </svg>
   );
 }
