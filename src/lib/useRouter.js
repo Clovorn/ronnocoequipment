@@ -29,6 +29,7 @@ function parseRoute(hash) {
     case 'favorites':  return { name: 'favorites',  params: {} };
     case 'deal':       return { name: 'deal',       params: {} };   // new-deal form
     case 'profile':    return { name: 'profile',    params: {} };   // user's own profile editor
+    case 'faq':        return { name: 'faq',        params: { anchor: second || null } };
     case 'vendor':     return { name: 'vendor',     params: { slug: second || null } };
     case 'vendors':    return { name: 'vendors',    params: {} }; // full list
     case 'admin':      return { name: 'admin',      params: { section: second || null } };
@@ -47,6 +48,7 @@ export function routeToHash(name, params = {}) {
     case 'favorites':  return '#/favorites';
     case 'deal':       return '#/deal';
     case 'profile':    return '#/profile';
+    case 'faq':        return params.anchor ? `#/faq/${params.anchor}` : '#/faq';
     case 'vendors':    return '#/vendors';
     case 'vendor':     return `#/vendor/${params.slug || ''}`;
     case 'admin':      return params.section ? `#/admin/${params.section}` : '#/admin';

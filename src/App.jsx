@@ -15,6 +15,7 @@ import HeroAdmin from './components/admin/HeroAdmin.jsx';
 import LookupListsAdmin from './components/admin/LookupListsAdmin.jsx';
 import DealBuilder from './components/DealBuilder.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
+import FaqPage from './components/FaqPage.jsx';
 import RonnocoLogo from './components/RonnocoLogo.jsx';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -103,6 +104,10 @@ export default function App() {
           navigate={navigate}
           onProfileUpdated={(updated) => setProfile(updated)}
         />
+      )}
+
+      {route.name === 'faq' && (
+        <FaqPage navigate={navigate} initialAnchor={route.params.anchor} />
       )}
 
       {route.name === 'admin' && isAdmin && (
