@@ -1,14 +1,30 @@
-import { useAuth, signOut } from './lib/useAuth.js';
+import { useState } from 'react';
+import { useAuth } from './lib/useAuth.js';
 import LoginScreen from './components/LoginScreen.jsx';
+import Shell from './components/Shell.jsx';
 import CatalogBrowser from './components/CatalogBrowser.jsx';
+import BundlesBrowser from './components/BundlesBrowser.jsx';
+import AdminHome from './components/admin/AdminHome.jsx';
+import AnnouncementsAdmin from './components/admin/AnnouncementsAdmin.jsx';
+import BundlesAdmin from './components/admin/BundlesAdmin.jsx';
+import RonnocoLogo from './components/RonnocoLogo.jsx';
+
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
+const SUPABASE_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
 export default function App() {
+  if (!SUPABASE_URL || !SUPABASE_KEY) {
+    return <ConfigurationRequired />;
+  }
+
   const { session, profile, loading } = useAuth();
+  const [currentTab, setCurrentTab] = useState('catalog');
+  const [adminPage, setAdminPage] = useState(null); // null | 'announcements' | 'bundles'
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="text-ink-500 text-sm">Loading…</div>
+      <div className="min-h-screen flex items-center justify-center bg-page-50">
+        <div className="text-slate-500 text-sm">Loading…</div>
       </div>
     );
   }
@@ -17,19 +33,22 @@ export default function App() {
     return <LoginScreen />;
   }
 
-  // Customers see a different view (placeholder for now)
   const role = profile?.role || 'sales';
   const canEdit = role === 'admin' || role === 'director';
+  const isAdmin = canEdit;
+  const userId = session.user.id;
 
+  // Customer-only view — no catalog access
   if (role === 'customer') {
     return (
-      <Shell profile={profile} session={session}>
-        <div className="p-10">
-          <p className="text-xs uppercase tracking-[0.2em] text-ink-500 mb-1">
+      <Shell profile={profile} session={session}
+             currentTab="catalog" onTabChange={() => {}}>
+        <div className="px-4 md:px-10 py-10">
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">
             Customer Portal
           </p>
-          <h1 className="font-serif text-3xl text-ink-900 mb-4">Your Quotes</h1>
-          <p className="text-ink-600">
+          <h1 className="text-2xl md:text-3xl font-light text-slate-900 mb-4">Your Quotes</h1>
+          <p className="text-slate-600">
             Quote viewer coming soon. You'll see your active and archived quotes here.
           </p>
         </div>
@@ -37,65 +56,76 @@ export default function App() {
     );
   }
 
+  function handleTabChange(tab) {
+    setCurrentTab(tab);
+    if (tab !== 'admin') setAdminPage(null);
+  }
+
   return (
-    <Shell profile={profile} session={session}>
-      <CatalogBrowser canEdit={canEdit} />
+    <Shell
+      profile={profile}
+      session={session}
+      currentTab={currentTab}
+      onTabChange={handleTabChange}
+    >
+      {currentTab === 'catalog' && (
+        <CatalogBrowser canEdit={canEdit} userId={userId} />
+      )}
+
+      {currentTab === 'bundles' && (
+        <BundlesBrowser canEdit={canEdit} />
+      )}
+
+      {currentTab === 'favorites' && (
+        <CatalogBrowser
+          canEdit={canEdit}
+          userId={userId}
+          favoritesOnly={true}
+          showAnnouncements={false}
+        />
+      )}
+
+      {currentTab === 'admin' && isAdmin && (
+        <>
+          {!adminPage && <AdminHome onNavigate={setAdminPage} />}
+          {adminPage === 'announcements' && (
+            <AnnouncementsAdmin onBack={() => setAdminPage(null)} userId={userId} />
+          )}
+          {adminPage === 'bundles' && (
+            <BundlesAdmin onBack={() => setAdminPage(null)} userId={userId} />
+          )}
+        </>
+      )}
+
+      {currentTab === 'admin' && !isAdmin && (
+        <div className="px-4 md:px-10 py-10 text-center">
+          <p className="text-slate-500">You don't have access to this section.</p>
+        </div>
+      )}
     </Shell>
   );
 }
 
-function Shell({ profile, session, children }) {
-  const role = profile?.role || 'sales';
-  const roleLabel = {
-    admin: 'Admin',
-    director: 'Director',
-    sales: 'Sales',
-    customer: 'Customer',
-  }[role];
-
+function ConfigurationRequired() {
   return (
-    <div className="min-h-screen">
-      {/* Top nav */}
-      <header className="border-b border-cream-200 bg-cream-50/80 backdrop-blur-sm sticky top-0 z-30">
-        <div className="px-6 lg:px-10 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-full bg-ink-900 text-cream-50 flex items-center justify-center font-serif text-base">
-              R
-            </div>
-            <div>
-              <div className="font-serif text-lg text-ink-900 leading-none">Ronnoco</div>
-              <div className="text-[10px] uppercase tracking-[0.18em] text-ink-500">
-                Equipment Catalog
-              </div>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-4">
-            <div className="text-right">
-              <div className="text-sm font-medium text-ink-900">
-                {profile?.display_name || session.user.email}
-              </div>
-              <div className="text-[10px] uppercase tracking-wider text-copper-600 font-medium">
-                {roleLabel}
-              </div>
-            </div>
-            <button
-              onClick={() => signOut()}
-              className="text-sm text-ink-600 hover:text-ink-900 transition-colors
-                         px-3 py-1.5 hover:bg-cream-100 rounded-sm"
-            >
-              Sign out
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main>{children}</main>
-
-      <footer className="px-6 lg:px-10 py-6 mt-12 border-t border-cream-200 text-xs text-ink-500 flex justify-between">
-        <span>Ronnoco Equipment Catalog · v0.1</span>
-        <span className="font-mono">{new Date().getFullYear()}</span>
-      </footer>
+    <div className="min-h-screen flex items-center justify-center p-8 bg-page-50">
+      <div className="max-w-md bg-white border border-page-200 rounded-lg shadow-card p-8">
+        <RonnocoLogo variant="on-light" className="mb-6" />
+        <h1 className="text-xl font-medium text-slate-900 mb-3">
+          Configuration required
+        </h1>
+        <p className="text-sm text-slate-600 leading-relaxed mb-4">
+          The Supabase environment variables are not set. Add{' '}
+          <code className="bg-page-100 px-1.5 py-0.5 rounded text-xs font-mono">
+            VITE_SUPABASE_URL
+          </code>{' '}
+          and{' '}
+          <code className="bg-page-100 px-1.5 py-0.5 rounded text-xs font-mono">
+            VITE_SUPABASE_ANON_KEY
+          </code>{' '}
+          to your Netlify site's environment variables, then redeploy.
+        </p>
+      </div>
     </div>
   );
 }

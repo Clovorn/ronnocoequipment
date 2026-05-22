@@ -4,33 +4,67 @@ export default {
   theme: {
     extend: {
       fontFamily: {
-        serif: ['"Source Serif 4"', 'Georgia', 'serif'],
-        sans: ['"Inter Tight"', 'system-ui', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'ui-monospace', 'monospace'],
+        // Roboto everywhere. Pick three weights for type hierarchy.
+        sans: ['Roboto', 'system-ui', 'sans-serif'],
+        mono: ['"Roboto Mono"', 'ui-monospace', 'monospace'],
       },
       colors: {
-        cream: {
-          50:  '#fbf8f3',
-          100: '#f5efe4',
-          200: '#ebe1cf',
-          300: '#dccbac',
+        // Navy: Ronnoco accent. 900 is the deepest, 500 a usable mid-tone.
+        navy: {
+          950: '#050e1f',
+          900: '#0a1f3d',  // primary accent, header background
+          800: '#0f2a52',
+          700: '#163566',
+          600: '#1f4480',
+          500: '#2b5499',
+          400: '#4974b8',
+          300: '#7b9bd0',
+          200: '#b1c4e2',
+          100: '#dde5f1',
+          50:  '#f0f4fa',
         },
-        ink: {
-          900: '#1f160e',
-          800: '#332217',
-          700: '#4a3322',
-          600: '#6b4d36',
-          500: '#8f6e4f',
+        // Neutrals for the data canvas: cool gray-blue, calm but not sterile.
+        page: {
+          50:  '#f4f6fa',   // main content background
+          100: '#eaeef5',
+          200: '#dbe2ec',
+          300: '#c0cbd9',
         },
-        copper: {
-          500: '#b8612a',
-          600: '#9a4f20',
-          700: '#7a3f1a',
+        // Text colors specifically for use ON the dark navy surfaces.
+        // "Secondary text color = white" means these are the white-on-dark family.
+        chalk: {
+          50:  '#ffffff',     // primary text on navy
+          100: '#f5f7fb',     // near-white
+          200: '#e2e7ef',     // muted white
+          300: '#b9c3d2',     // secondary muted (labels on dark surfaces)
+          400: '#8a96a8',     // tertiary muted
         },
+        // Dark text colors for use ON the light page background.
+        slate: {
+          900: '#0a1525',
+          800: '#1c2a3f',
+          700: '#334155',
+          600: '#475569',
+          500: '#64748b',
+          400: '#94a3b8',
+          300: '#cbd5e1',
+        },
+        // Accent / state colors that pair with navy
+        accent: {
+          // Warm amber for highlights — pops against navy without competing
+          500: '#f59e0b',
+          600: '#d97706',
+        },
+        ok:    '#16a34a',
+        warn:  '#d97706',
+        bad:   '#dc2626',
       },
       boxShadow: {
-        soft: '0 1px 0 rgba(31, 22, 14, 0.04), 0 4px 12px -2px rgba(31, 22, 14, 0.06)',
-        elevated: '0 2px 0 rgba(31, 22, 14, 0.06), 0 12px 32px -8px rgba(31, 22, 14, 0.18)',
+        // Soft shadows for cards on the page background
+        card: '0 1px 2px rgba(10, 31, 61, 0.04), 0 4px 12px -2px rgba(10, 31, 61, 0.06)',
+        elevated: '0 2px 4px rgba(10, 31, 61, 0.08), 0 16px 32px -8px rgba(10, 31, 61, 0.18)',
+        // Inset for the top nav
+        navbar: 'inset 0 -1px 0 rgba(255, 255, 255, 0.06)',
       },
     },
   },
