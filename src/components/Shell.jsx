@@ -1,32 +1,32 @@
 import RonnocoLogo from './RonnocoLogo.jsx';
 import UserMenu from './UserMenu.jsx';
 
+// Regular nav tabs — the main browsable areas. Admin lives in the user menu now;
+// New Deal is a separate primary CTA, rendered as an outlined button beside the
+// tabs (because it's an action, not a place).
 const TABS = [
   { key: 'home',       label: 'Home',       routeName: 'home',       icon: HomeIcon },
   { key: 'catalog',    label: 'Catalog',    routeName: 'catalog',    icon: CatalogIcon },
   { key: 'bundles',    label: 'Bundles',    routeName: 'bundles',    icon: BundlesIcon },
-  { key: 'deal',       label: 'New Deal',   routeName: 'deal',       icon: DealIcon },
   { key: 'favorites',  label: 'Favorites',  routeName: 'favorites',  icon: StarIcon },
 ];
 
-const ADMIN_TAB = { key: 'admin', label: 'Admin', routeName: 'admin', icon: AdminIcon };
-
 /**
  * Shell takes a `routeName` (one of 'home','catalog','bundles','favorites','admin',
- * 'vendor','vendors','profile','not-found') and a `navigate(name, params)` function.
- * It highlights the corresponding tab. Vendor / vendors / profile pages bucket under
- * 'home' for navigation highlighting since they're reached from there or the user menu.
+ * 'vendor','vendors','profile','deal','not-found') and a `navigate(name, params)`
+ * function. Vendor / vendors / profile pages bucket under 'home' for highlight purposes.
  */
 export default function Shell({ profile, session, routeName, navigate, children }) {
   const role = profile?.role || 'sales';
   const isAdmin = role === 'admin' || role === 'director';
-  const tabs = isAdmin ? [...TABS, ADMIN_TAB] : TABS;
 
   // For highlighting, treat vendor & profile sub-pages as part of 'home'
   const activeTab =
     routeName === 'vendor' || routeName === 'vendors' || routeName === 'profile'
       ? 'home'
       : routeName;
+
+  const isDealActive = activeTab === 'deal';
 
   return (
     <div className="min-h-screen bg-page-50 pb-16 md:pb-0">
@@ -44,7 +44,7 @@ export default function Shell({ profile, session, routeName, navigate, children 
           </button>
 
           <nav className="hidden md:flex items-center gap-1">
-            {tabs.map((t) => (
+            {TABS.map((t) => (
               <button key={t.key} onClick={() => navigate(t.routeName)}
                       className={`px-3 py-1.5 text-sm rounded transition-colors font-medium
                         ${activeTab === t.key
@@ -53,6 +53,18 @@ export default function Shell({ profile, session, routeName, navigate, children 
                 {t.label}
               </button>
             ))}
+
+            {/* New Deal — outlined primary CTA, set apart from the regular tabs.
+                When active (we're on the deal builder), the outline solidifies. */}
+            <button
+              onClick={() => navigate('deal')}
+              className={`ml-2 px-4 py-1.5 text-sm font-medium rounded border transition-colors
+                ${isDealActive
+                  ? 'bg-white text-navy-900 border-white'
+                  : 'bg-transparent text-chalk-50 border-chalk-50/70 hover:bg-white/10 hover:border-chalk-50'}`}
+            >
+              + New Deal
+            </button>
           </nav>
 
           <UserMenu
@@ -69,8 +81,8 @@ export default function Shell({ profile, session, routeName, navigate, children 
       {/* Mobile bottom tab bar */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-page-200 z-40
                       shadow-[0_-2px_8px_rgba(10,31,61,0.05)]">
-        <div className={`grid ${isAdmin ? 'grid-cols-5' : 'grid-cols-4'}`}>
-          {tabs.map((t) => {
+        <div className="grid grid-cols-5">
+          {TABS.map((t) => {
             const Icon = t.icon;
             const active = activeTab === t.key;
             return (
@@ -86,6 +98,22 @@ export default function Shell({ profile, session, routeName, navigate, children 
               </button>
             );
           })}
+
+          {/* Mobile New Deal — uses the navy color and a subtle outline to stand
+              out from the regular tabs without breaking the bottom-bar pattern */}
+          <button
+            onClick={() => navigate('deal')}
+            aria-label="New Deal"
+            className={`py-2.5 flex flex-col items-center gap-0.5 transition-colors mx-1 my-1 rounded
+              ${isDealActive
+                ? 'bg-navy-900 text-chalk-50'
+                : 'border border-navy-900/40 text-navy-900 hover:bg-navy-900 hover:text-chalk-50'}`}
+          >
+            <DealIcon active={isDealActive} />
+            <span className="text-[10px] uppercase tracking-wider font-bold">
+              New Deal
+            </span>
+          </button>
         </div>
       </nav>
     </div>
@@ -125,14 +153,6 @@ function StarIcon({ active }) {
   return (
     <svg className="w-5 h-5" fill={active ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth={1.8} viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.196-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z" />
-    </svg>
-  );
-}
-function AdminIcon({ active }) {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} viewBox="0 0 24 24">
-      <path strokeLinecap="round" strokeLinejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
     </svg>
   );
 }
