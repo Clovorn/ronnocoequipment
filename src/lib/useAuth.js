@@ -60,7 +60,7 @@ export function useAuth() {
     };
   }, []);
 
-  return { session, profile, loading };
+  return { session, profile, loading, setProfile };
 }
 
 export async function signIn(email, password) {

@@ -13,6 +13,7 @@ import BundlesAdmin from './components/admin/BundlesAdmin.jsx';
 import VendorsAdmin from './components/admin/VendorsAdmin.jsx';
 import HeroAdmin from './components/admin/HeroAdmin.jsx';
 import DealBuilder from './components/DealBuilder.jsx';
+import ProfilePage from './components/ProfilePage.jsx';
 import RonnocoLogo from './components/RonnocoLogo.jsx';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -23,7 +24,7 @@ export default function App() {
     return <ConfigurationRequired />;
   }
 
-  const { session, profile, loading } = useAuth();
+  const { session, profile, loading, setProfile } = useAuth();
   const { route, navigate } = useRouter();
 
   if (loading) {
@@ -92,6 +93,15 @@ export default function App() {
 
       {route.name === 'deal' && (
         <DealBuilder profile={profile} session={session} navigate={navigate} />
+      )}
+
+      {route.name === 'profile' && (
+        <ProfilePage
+          profile={profile}
+          session={session}
+          navigate={navigate}
+          onProfileUpdated={(updated) => setProfile(updated)}
+        />
       )}
 
       {route.name === 'admin' && isAdmin && (

@@ -1,5 +1,5 @@
 import RonnocoLogo from './RonnocoLogo.jsx';
-import { signOut } from '../lib/useAuth.js';
+import UserMenu from './UserMenu.jsx';
 
 const TABS = [
   { key: 'home',       label: 'Home',       routeName: 'home',       icon: HomeIcon },
@@ -13,19 +13,20 @@ const ADMIN_TAB = { key: 'admin', label: 'Admin', routeName: 'admin', icon: Admi
 
 /**
  * Shell takes a `routeName` (one of 'home','catalog','bundles','favorites','admin',
- * 'vendor','vendors','not-found') and a `navigate(name, params)` function.
- * It highlights the corresponding tab. Vendor / vendors pages bucket under 'home'
- * for navigation highlighting since they're reached from there.
+ * 'vendor','vendors','profile','not-found') and a `navigate(name, params)` function.
+ * It highlights the corresponding tab. Vendor / vendors / profile pages bucket under
+ * 'home' for navigation highlighting since they're reached from there or the user menu.
  */
 export default function Shell({ profile, session, routeName, navigate, children }) {
   const role = profile?.role || 'sales';
   const isAdmin = role === 'admin' || role === 'director';
   const tabs = isAdmin ? [...TABS, ADMIN_TAB] : TABS;
-  const roleLabel = { admin: 'Admin', director: 'Director', sales: 'Sales', customer: 'Customer' }[role];
 
-  // For highlighting, treat vendor sub-pages as part of 'home'
+  // For highlighting, treat vendor & profile sub-pages as part of 'home'
   const activeTab =
-    routeName === 'vendor' || routeName === 'vendors' ? 'home' : routeName;
+    routeName === 'vendor' || routeName === 'vendors' || routeName === 'profile'
+      ? 'home'
+      : routeName;
 
   return (
     <div className="min-h-screen bg-page-50 pb-16 md:pb-0">
@@ -54,34 +55,16 @@ export default function Shell({ profile, session, routeName, navigate, children 
             ))}
           </nav>
 
-          <div className="flex items-center gap-3">
-            <div className="text-right hidden sm:block">
-              <div className="text-sm font-medium text-chalk-50 leading-tight">
-                {profile?.display_name || session.user.email}
-              </div>
-              <div className="text-[10px] uppercase tracking-wider text-chalk-300 font-medium">
-                {roleLabel}
-              </div>
-            </div>
-            <button onClick={() => signOut()}
-                    className="text-sm text-chalk-200 hover:text-chalk-50 transition-colors
-                               px-2 sm:px-3 py-1.5 hover:bg-white/5 rounded"
-                    aria-label="Sign out" title="Sign out">
-              <span className="hidden sm:inline">Sign out</span>
-              <svg className="sm:hidden w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-              </svg>
-            </button>
-          </div>
+          <UserMenu
+            profile={profile}
+            session={session}
+            navigate={navigate}
+            isAdmin={isAdmin}
+          />
         </div>
       </header>
 
       <main>{children}</main>
-
-      <footer className="hidden md:flex px-6 lg:px-10 py-6 mt-12 border-t border-page-200 text-xs text-slate-500 justify-between">
-        <span>Ronnoco Equipment Catalog · v0.3</span>
-        <span className="font-mono">{new Date().getFullYear()}</span>
-      </footer>
 
       {/* Mobile bottom tab bar */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-page-200 z-40
