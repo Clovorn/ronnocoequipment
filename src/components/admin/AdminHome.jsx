@@ -1,6 +1,12 @@
 export default function AdminHome({ onNavigate }) {
   const cards = [
     {
+      key: 'hero',
+      title: 'Home page hero',
+      description: 'Manage the banner image, headline, and supporting text at the top of the home page.',
+      icon: HeroIcon,
+    },
+    {
       key: 'announcements',
       title: 'Announcements',
       description: 'Manage promotions, special deals, and news posts shown on the home page.',
@@ -65,6 +71,14 @@ function AnnouncementsIcon() {
     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round"
             d="M11 5.882V19.24a1.76 1.76 0 01-3.417.592l-2.147-6.15M18 13a3 3 0 100-6M5.436 13.683A4.001 4.001 0 017 6h1.832c4.1 0 7.625-1.234 9.168-3v14c-1.543-1.766-5.067-3-9.168-3H7a3.988 3.988 0 01-1.564-.317z" />
+    </svg>
+  );
+}
+function HeroIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <rect x="3" y="5" width="18" height="10" rx="2" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3 19h18M3 22h18" />
     </svg>
   );
 }

@@ -11,6 +11,7 @@ import AdminHome from './components/admin/AdminHome.jsx';
 import AnnouncementsAdmin from './components/admin/AnnouncementsAdmin.jsx';
 import BundlesAdmin from './components/admin/BundlesAdmin.jsx';
 import VendorsAdmin from './components/admin/VendorsAdmin.jsx';
+import HeroAdmin from './components/admin/HeroAdmin.jsx';
 import RonnocoLogo from './components/RonnocoLogo.jsx';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -91,6 +92,9 @@ export default function App() {
       {route.name === 'admin' && isAdmin && (
         <>
           {!route.params.section && <AdminHome onNavigate={(s) => navigate('admin', { section: s })} />}
+          {route.params.section === 'hero' && (
+            <HeroAdmin onBack={() => navigate('admin')} userId={userId} />
+          )}
           {route.params.section === 'announcements' && (
             <AnnouncementsAdmin onBack={() => navigate('admin')} userId={userId} />
           )}

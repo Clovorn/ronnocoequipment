@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
 import { useVendors } from '../lib/useVendors.js';
+import { useSiteSettings } from '../lib/useSiteSettings.js';
 import VendorLogoButton from './VendorLogoButton.jsx';
+import HeroHeader from './HeroHeader.jsx';
 
 const SECTION_CONFIG = {
   promotion:    { label: "What's New",       accent: 'border-l-accent-500', badge: 'bg-accent-500/10 text-accent-700' },
@@ -13,6 +15,7 @@ export default function Home({ navigate, profile }) {
   const [announcements, setAnnouncements] = useState([]);
   const [annLoading, setAnnLoading] = useState(true);
   const vendors = useVendors();
+  const { settings: siteSettings } = useSiteSettings();
 
   useEffect(() => {
     let cancelled = false;
@@ -36,16 +39,20 @@ export default function Home({ navigate, profile }) {
   const greetingName = profile?.display_name?.split(' ')?.[0] || null;
 
   return (
-    <div className="px-4 md:px-6 lg:px-10 py-6 md:py-8">
-      {/* Header */}
-      <div className="mb-8">
-        <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">
-          {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
-        </p>
-        <h1 className="text-2xl md:text-3xl font-light text-slate-900">
-          {greetingName ? `Welcome back, ${greetingName}.` : 'Welcome back.'}
-        </h1>
-      </div>
+    <>
+      {/* Full-bleed hero — only renders if hero_enabled in site_settings */}
+      <HeroHeader settings={siteSettings} />
+
+      <div className="px-4 md:px-6 lg:px-10 py-6 md:py-8">
+        {/* Welcome row — small now that the hero handles the headline impact */}
+        <div className="mb-8">
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">
+            {new Date().toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' })}
+          </p>
+          <h2 className="text-xl md:text-2xl font-light text-slate-900">
+            {greetingName ? `Welcome back, ${greetingName}.` : 'Welcome back.'}
+          </h2>
+        </div>
 
       {/* Announcements grid: three sections side by side on desktop, stacked on mobile */}
       {!annLoading && announcements.length > 0 && (
@@ -134,7 +141,8 @@ export default function Home({ navigate, profile }) {
           />
         </div>
       </section>
-    </div>
+      </div>
+    </>
   );
 }
 
