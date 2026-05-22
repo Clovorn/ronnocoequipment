@@ -24,6 +24,12 @@ export default function AdminHome({ onNavigate }) {
       description: 'Upload vendor logos, set display names, choose which appear on the home page.',
       icon: VendorIcon,
     },
+    {
+      key: 'lookup-lists',
+      title: 'Dropdown Lists',
+      description: 'Manage distributors, ROMs, coffee programs, and all deal-sheet dropdown values.',
+      icon: ListsIcon,
+    },
   ];
 
   return (
@@ -94,6 +100,13 @@ function VendorIcon() {
   return (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v16M9 9h.01M9 13h.01M9 17h.01M15 9h.01M15 13h.01M15 17h.01M3 21h18" />
+    </svg>
+  );
+}
+function ListsIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
     </svg>
   );
 }

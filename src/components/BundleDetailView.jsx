@@ -73,6 +73,15 @@ export default function BundleDetailView({ bundle, onClose }) {
         </div>
 
         <div className="p-4 md:p-6 space-y-6">
+          {/* Hero image — full-width banner, only when uploaded */}
+          {bundle.image_url && (
+            <img
+              src={bundle.image_url}
+              alt={bundle.name}
+              className="w-full h-48 md:h-64 object-cover rounded-lg border border-page-200 bg-page-100"
+            />
+          )}
+
           {bundle.long_description && (
             <p className="text-sm text-slate-700 leading-relaxed">{bundle.long_description}</p>
           )}

@@ -12,6 +12,7 @@ import AnnouncementsAdmin from './components/admin/AnnouncementsAdmin.jsx';
 import BundlesAdmin from './components/admin/BundlesAdmin.jsx';
 import VendorsAdmin from './components/admin/VendorsAdmin.jsx';
 import HeroAdmin from './components/admin/HeroAdmin.jsx';
+import LookupListsAdmin from './components/admin/LookupListsAdmin.jsx';
 import DealBuilder from './components/DealBuilder.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import RonnocoLogo from './components/RonnocoLogo.jsx';
@@ -118,6 +119,9 @@ export default function App() {
           )}
           {route.params.section === 'vendors' && (
             <VendorsAdmin onBack={() => navigate('admin')} />
+          )}
+          {route.params.section === 'lookup-lists' && (
+            <LookupListsAdmin onBack={() => navigate('admin')} />
           )}
         </>
       )}

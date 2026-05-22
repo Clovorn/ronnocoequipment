@@ -1,19 +1,14 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { submitDealToPipeline, logDealActivity, isDealPipelineConfigured } from '../lib/dealPipeline.js';
 import { LEASE_MIN_PRICE, LEASE_RATE } from '../lib/leasing.js';
+import { useLookupList } from '../lib/useLookupList.js';
+import { US_STATES } from '../lib/usStates.js';
 import EquipmentPicker from './EquipmentPicker.jsx';
-
-const ROM_OPTIONS = ['Central', 'Northeast', 'Southeast', 'Midwest', 'Southwest', 'West', 'Northwest'];
-const COFFEE_PROGRAM_OPTIONS = ['Full Coffee', 'Bean to Cup', 'Pour Over', 'Espresso', 'Cold Brew', 'Other'];
-const DEAL_TYPE_OPTIONS = ['Equipment Lease', 'Finance Equipment', 'Purchase From Ronnoco', 'Loan Equipment'];
-const GRAPHICS_OPTIONS = ['Standard Wrap', 'Custom Graphics', 'No Graphics', 'TBD'];
 
 const formatUSD = (n) => `$${(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
-/**
- * Compose the equipment_selection text for the deal pipeline (legacy text field)
- * and compute the total cost from the structured items.
- */
+/* ───────────────────────── Equipment summary ───────────────────────── */
+
 function summarizeEquipment(items) {
   if (!items.length) return { text: '', total: 0 };
   const lines = items.map((it) => {
@@ -25,30 +20,121 @@ function summarizeEquipment(items) {
   return { text: lines.join('\n'), total };
 }
 
-export default function DealBuilder({ profile, session, navigate }) {
-  const [draft, setDraft] = useState({
-    first_name: '', last_name: '', email: '', phone: '',
-    is_new_customer: false,
-    store_name: '', legal_business_name: '', address: '',
-    store_phone: '', customer_account: '', chain_store: 'No',
-    sales_rep: profile?.display_name || '',
-    sales_rep_email: session.user.email || '',
-    rom: '',
-    coffee_program: '',
-    deal_type: '',
-    target_install_date: '',
-    emergency_install: 'No',
-    parent_distributor: '',
+/* ───────────────────────── Initial draft state ───────────────────────── */
+
+function makeBlankDraft(profile, session) {
+  return {
+    // Submission metadata
+    route_number: '',
+    sales_rep_first_name: (profile?.display_name || '').split(' ')[0] || '',
+    sales_rep_last_name:  (profile?.display_name || '').split(' ').slice(1).join(' ') || '',
+    sales_rep_email:      session?.user?.email || '',
+
+    // Customer identity
+    is_new_customer: false,                      // toggle: "Is this a current Ronnoco Customer?" — INVERTED label
+    customer_account: '',
+    customer_type: '',                           // C-Store / Food Service
     sub_group: '',
+    henderson_account: false,
+    change_of_ownership: false,
+    prior_account_num: '',
+    change_details: '',
+
+    // Chain & location
+    chain_store: false,
+    chain_group_num: '',
+    number_of_locations: '',
+    store_name: '',
+    legal_business_name: '',
+    address: '',                                  // Street address
+    city: '',
+    state: '',
+    zip_code: '',
+    store_phone: '',
+
+    // Primary contact
+    contact_first_name: '',
+    contact_last_name: '',
+    contact_cell: '',
+    contact_email: '',
+
+    // Coffee program & delivery
+    coffee_program: '',
+    distribution_method: '',
+    delivery_method: '',
+    delivery_recurrence: '',
+    current_coffee_supplier: '',
+    parts_service_option: '',
+
+    // Distributor info
+    parent_distributor: '',
+    parent_distributor_num: '',
+    core_mark_div_num: '',
+    distributor_warehouse: '',
+    distributor_customer_num: '',
+    distributor_rep_name: '',
     distributor_rep_email: '',
+    distributor_rep_phone: '',
+
+    // ROM & region
+    rom_person: '',
+    rom_email: '',
+    rom_region: '',
+
+    // Equipment & financials
+    deal_type: '',
+    coffee_spend_3mo: '',
+    expected_monthly_sales: '',
+
+    // Install
+    target_install_date: '',
+    need_by_date: '',
+    emergency_install: false,
+    emergency_install_details: '',
+
+    // Graphics
     graphics_package: '',
+    ship_graphics_with_equip: false,
+    has_custom_graphics: false,
+
+    // Notes
     notes: '',
-  });
+  };
+}
+
+/* ───────────────────────── Main component ───────────────────────── */
+
+export default function DealBuilder({ profile, session, navigate }) {
+  const [draft, setDraft] = useState(() => makeBlankDraft(profile, session));
   const [equipmentItems, setEquipmentItems] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [successInfo, setSuccessInfo] = useState(null);
+
+  // Lookup lists
+  const distributorList     = useLookupList('parent_distributor');
+  const coffeeProgramList   = useLookupList('coffee_program');
+  const customerTypeList    = useLookupList('customer_type');
+  const distributionList    = useLookupList('distribution_method');
+  const dealTypeList        = useLookupList('deal_type');
+  const graphicsList        = useLookupList('graphics_package');
+  const romPersonList       = useLookupList('rom_person');
+  const romRegionList       = useLookupList('rom_region');
+
+  // Auto-populate ROM email when a ROM person is selected (if email is on file)
+  useEffect(() => {
+    if (!draft.rom_person) {
+      if (draft.rom_email) setDraft((p) => ({ ...p, rom_email: '' }));
+      return;
+    }
+    const rom = romPersonList.options.find((o) => o.value === draft.rom_person);
+    const newEmail = rom?.email || '';
+    if (newEmail !== draft.rom_email) {
+      setDraft((p) => ({ ...p, rom_email: newEmail }));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft.rom_person, romPersonList.options]);
 
   const update = (key, value) => setDraft((prev) => ({ ...prev, [key]: value }));
 
@@ -57,31 +143,37 @@ export default function DealBuilder({ profile, session, navigate }) {
   const qualifiesForFinance = dealTotal >= LEASE_MIN_PRICE;
   const monthlyEstimate = qualifiesForFinance ? dealTotal * LEASE_RATE : null;
 
+  const isIndirect       = draft.distribution_method === 'Indirect (Distributor)';
+  const isCoreMark       = draft.parent_distributor === 'Core-Mark';
+
   function validate() {
     const required = [
-      ['first_name', 'First name'],
-      ['last_name', 'Last name'],
-      ['email', 'Email'],
-      ['store_name', 'Store name'],
-      ['address', 'Store address'],
-      ['sales_rep', 'Sales rep name'],
-      ['sales_rep_email', 'Sales rep email'],
-      ['rom', 'ROM / Region'],
-      ['deal_type', 'Deal type'],
-      ['target_install_date', 'Target install date'],
-      ['parent_distributor', 'Parent distributor'],
-      ['distributor_rep_email', 'Distributor rep email'],
+      ['contact_first_name',   'Contact first name'],
+      ['contact_last_name',    'Contact last name'],
+      ['contact_email',        'Contact email'],
+      ['store_name',           'Store name'],
+      ['address',              'Street address'],
+      ['city',                 'City'],
+      ['state',                'State'],
+      ['zip_code',             'Zip code'],
+      ['customer_type',        'Customer type (C-Store / Food Service)'],
+      ['distribution_method',  'Distribution method (DSD / Indirect)'],
+      ['deal_type',            'Deal type'],
+      ['rom_person',           'ROM person'],
+      ['target_install_date',  'Target install date'],
     ];
     for (const [key, label] of required) {
       if (!String(draft[key] || '').trim()) {
         return `Missing required field: ${label}`;
       }
     }
+    if (isIndirect && !draft.parent_distributor) {
+      return 'Parent distributor is required when distribution method is Indirect.';
+    }
     if (equipmentItems.length === 0) {
       return 'Please select at least one piece of equipment.';
     }
-    // Block lease/finance deal types when total is below the minimum
-    if (!qualifiesForFinance && (draft.deal_type === 'Equipment Lease' || draft.deal_type === 'Finance Equipment')) {
+    if (!qualifiesForFinance && (draft.deal_type === 'Lease Equipment' || draft.deal_type === 'Finance Equipment')) {
       return `Deals under ${formatUSD(LEASE_MIN_PRICE)} cannot be leased or financed. Choose "Purchase From Ronnoco" instead, or add more equipment to bring the total above ${formatUSD(LEASE_MIN_PRICE)}.`;
     }
     return null;
@@ -94,48 +186,104 @@ export default function DealBuilder({ profile, session, navigate }) {
       setError(validationError);
       return;
     }
-
     if (!isDealPipelineConfigured) {
       setError('Deal pipeline is not configured. An admin needs to set VITE_DEAL_PIPELINE_URL and VITE_DEAL_PIPELINE_ANON_KEY in Netlify env vars.');
       return;
     }
-
     setSubmitting(true);
 
-    // Build the deal-pipeline payload — matches the existing `deals` table
-    // schema in the deal-pipeline project (compatible with Jotform-imported rows).
+    // Compose the pipeline payload. Maps app field names → pipeline column names.
+    const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
+    const trimOrNull = (v) => {
+      const t = String(v || '').trim();
+      return t || null;
+    };
     const pipelinePayload = {
-      first_name:            draft.first_name.trim(),
-      last_name:             draft.last_name.trim(),
-      email:                 draft.email.trim(),
-      phone:                 draft.phone.trim(),
+      // Customer contact (the "customer" name comes from the primary contact)
+      first_name:            trimOrNull(draft.contact_first_name),
+      last_name:             trimOrNull(draft.contact_last_name),
+      email:                 trimOrNull(draft.contact_email),
+      phone:                 trimOrNull(draft.contact_cell),  // legacy `phone` column = contact cell
       is_new_customer:       !!draft.is_new_customer,
-      store_name:            draft.store_name.trim(),
-      legal_business_name:   draft.legal_business_name.trim(),
-      address:               draft.address.trim(),
-      store_phone:           draft.store_phone.trim(),
-      customer_account:      draft.customer_account.trim(),
-      chain_store:           draft.chain_store,
-      sales_rep:             draft.sales_rep.trim(),
-      sales_rep_email:       draft.sales_rep_email.trim(),
-      rom:                   draft.rom,
-      coffee_program:        draft.coffee_program,
-      deal_type:             draft.deal_type,
+
+      // Store
+      store_name:            trimOrNull(draft.store_name),
+      legal_business_name:   trimOrNull(draft.legal_business_name),
+      address:               trimOrNull(draft.address),       // street address only now
+      city:                  trimOrNull(draft.city),
+      state:                 trimOrNull(draft.state),
+      zip_code:              trimOrNull(draft.zip_code),
+      store_phone:           trimOrNull(draft.store_phone),
+      customer_account:      trimOrNull(draft.customer_account),
+      customer_type:         trimOrNull(draft.customer_type),
+      sub_group:             trimOrNull(draft.sub_group),
+      henderson_account:     !!draft.henderson_account,
+      change_of_ownership:   !!draft.change_of_ownership,
+      prior_account_num:     trimOrNull(draft.prior_account_num),
+      change_details:        trimOrNull(draft.change_details),
+      chain_store:           draft.chain_store ? 'Yes' : 'No',
+      chain_group_num:       trimOrNull(draft.chain_group_num),
+      number_of_locations:   numOrNull(draft.number_of_locations),
+
+      // Primary contact extras
+      contact_name:          trimOrNull([draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' ')),
+      contact_cell:          trimOrNull(draft.contact_cell),
+      contact_email:         trimOrNull(draft.contact_email),
+
+      // Sales rep
+      sales_rep:             trimOrNull([draft.sales_rep_first_name, draft.sales_rep_last_name].filter(Boolean).join(' ')),
+      sales_rep_email:       trimOrNull(draft.sales_rep_email),
+      route_number:          trimOrNull(draft.route_number),
+
+      // Coffee program & delivery
+      coffee_program:        trimOrNull(draft.coffee_program),
+      distribution_method:   trimOrNull(draft.distribution_method),
+      delivery_method:       trimOrNull(draft.delivery_method),
+      delivery_recurrence:   trimOrNull(draft.delivery_recurrence),
+      current_coffee_supplier: trimOrNull(draft.current_coffee_supplier),
+      parts_service_option:  trimOrNull(draft.parts_service_option),
+
+      // Distributor
+      parent_distributor:    trimOrNull(draft.parent_distributor),
+      parent_distributor_num: trimOrNull(draft.parent_distributor_num),
+      core_mark_div_num:     trimOrNull(draft.core_mark_div_num),
+      distributor_warehouse: trimOrNull(draft.distributor_warehouse),
+      distributor_customer_num: trimOrNull(draft.distributor_customer_num),
+      distributor_rep_name:  trimOrNull(draft.distributor_rep_name),
+      distributor_rep_email: trimOrNull(draft.distributor_rep_email),
+      distributor_rep_phone: trimOrNull(draft.distributor_rep_phone),
+
+      // ROM
+      rom_person:            trimOrNull(draft.rom_person),
+      rom_email:             trimOrNull(draft.rom_email),
+      rom:                   trimOrNull(draft.rom_region),
+
+      // Equipment & financials
+      deal_type:             trimOrNull(draft.deal_type),
       equipment_selection:   eqSummary.text,
       total_eq_cost:         formatUSD(dealTotal),
-      target_install_date:   draft.target_install_date,
-      emergency_install:     draft.emergency_install,
-      parent_distributor:    draft.parent_distributor.trim(),
-      sub_group:             draft.sub_group.trim(),
-      distributor_rep_email: draft.distributor_rep_email.trim(),
-      graphics_package:      draft.graphics_package,
-      notes:                 draft.notes.trim(),
+      coffee_spend_3mo:      numOrNull(draft.coffee_spend_3mo),
+      expected_monthly_sales: numOrNull(draft.expected_monthly_sales),
+
+      // Install
+      target_install_date:   trimOrNull(draft.target_install_date),
+      need_by_date:          trimOrNull(draft.need_by_date),
+      emergency_install:     draft.emergency_install ? 'Yes' : 'No',
+      emergency_install_details: trimOrNull(draft.emergency_install_details),
+
+      // Graphics
+      graphics_package:      trimOrNull(draft.graphics_package),
+      ship_graphics_with_equip: !!draft.ship_graphics_with_equip,
+      has_custom_graphics:   !!draft.has_custom_graphics,
+
+      notes:                 trimOrNull(draft.notes),
+
+      // Lifecycle
       current_step:          'submitted',
       phase:                 'leasing',
       deal_status:           'active',
-      // Structured equipment data preserved for downstream tooling.
-      // Stored alongside the legacy text fields so the deal-pipeline
-      // dashboard's existing views keep working unchanged.
+
+      // Structured snapshot (preserves equipment + computed totals + raw form state)
       raw_csv: {
         source: 'ronnoco-catalog-dashboard',
         equipment_items: equipmentItems,
@@ -146,49 +294,35 @@ export default function DealBuilder({ profile, session, navigate }) {
     };
 
     const { data: deal, error: pipelineError } = await submitDealToPipeline(pipelinePayload);
-
     if (pipelineError) {
       setError(`Submission failed: ${pipelineError.message}`);
       setSubmitting(false);
       return;
     }
-
-    // Log the activity in the pipeline (best-effort — doesn't block on failure)
     await logDealActivity(
       deal.id,
       'Deal created',
       `Submitted via Ronnoco Catalog (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
-      draft.sales_rep
+      pipelinePayload.sales_rep
     );
 
     setSuccessInfo({
       dealId: deal.id,
-      customerName: `${draft.first_name} ${draft.last_name}`.trim(),
+      customerName: [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' '),
       storeName: draft.store_name,
     });
     setSubmitting(false);
   }
 
   function startNewDeal() {
-    setDraft({
-      first_name: '', last_name: '', email: '', phone: '',
-      is_new_customer: false,
-      store_name: '', legal_business_name: '', address: '',
-      store_phone: '', customer_account: '', chain_store: 'No',
-      sales_rep: profile?.display_name || '',
-      sales_rep_email: session.user.email || '',
-      rom: '', coffee_program: '', deal_type: '',
-      target_install_date: '', emergency_install: 'No',
-      parent_distributor: '', sub_group: '', distributor_rep_email: '',
-      graphics_package: '', notes: '',
-    });
+    setDraft(makeBlankDraft(profile, session));
     setEquipmentItems([]);
     setSuccessInfo(null);
     setError(null);
     window.scrollTo(0, 0);
   }
 
-  // Success screen
+  /* Success screen */
   if (successInfo) {
     return (
       <div className="px-4 md:px-6 lg:px-10 py-10 max-w-3xl">
@@ -222,7 +356,6 @@ export default function DealBuilder({ profile, session, navigate }) {
 
   return (
     <div className="px-4 md:px-6 lg:px-10 py-4 md:py-6 max-w-4xl">
-      {/* Header */}
       <div className="mb-5 md:mb-6">
         <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">New deal</p>
         <h1 className="text-2xl md:text-3xl font-light text-slate-900">Deal Sheet</h1>
@@ -243,65 +376,136 @@ export default function DealBuilder({ profile, session, navigate }) {
         </div>
       )}
 
-      {/* Section 1: Customer Information */}
-      <Section number="1" title="Customer Information">
+      {/* ─── Section 1: Sales Rep & Submission ─── */}
+      <Section number="1" title="Sales Rep & Submission">
         <FieldGrid cols={2}>
-          <TextField label="First name" required value={draft.first_name} onChange={(v) => update('first_name', v)} placeholder="First name" />
-          <TextField label="Last name" required value={draft.last_name} onChange={(v) => update('last_name', v)} placeholder="Last name" />
-          <TextField label="Email" required type="email" value={draft.email} onChange={(v) => update('email', v)} placeholder="customer@email.com" />
-          <TextField label="Phone" type="tel" value={draft.phone} onChange={(v) => update('phone', v)} placeholder="(555) 000-0000" />
+          <TextField label="Sales Rep First Name" required value={draft.sales_rep_first_name} onChange={(v) => update('sales_rep_first_name', v)} placeholder="From your profile" />
+          <TextField label="Sales Rep Last Name"  required value={draft.sales_rep_last_name}  onChange={(v) => update('sales_rep_last_name', v)}  placeholder="From your profile" />
+          <TextField label="Sales Rep Email"      required type="email" value={draft.sales_rep_email} onChange={(v) => update('sales_rep_email', v)} placeholder="rep@ronnoco.com" />
+          <TextField label="Route Number (RTE #)" value={draft.route_number} onChange={(v) => update('route_number', v)} placeholder="Route #" />
         </FieldGrid>
-        <Toggle label="New Customer" hint="Check if this customer is not yet in the CRM"
-                checked={draft.is_new_customer} onChange={(v) => update('is_new_customer', v)} />
       </Section>
 
-      {/* Section 2: Store Information */}
-      <Section number="2" title="Store Information">
+      {/* ─── Section 2: Customer Identity ─── */}
+      <Section number="2" title="Customer Identity">
+        <Toggle label="Current Ronnoco Customer" hint="Toggle off if this is a new (not yet in CRM) customer"
+                checked={!draft.is_new_customer} onChange={(v) => update('is_new_customer', !v)} />
+        <FieldGrid cols={2}>
+          <TextField label="Customer Account #" value={draft.customer_account} onChange={(v) => update('customer_account', v)} placeholder="If existing customer" />
+          <LookupSelect label="C-Store or Food Service?" required listState={customerTypeList} value={draft.customer_type} onChange={(v) => update('customer_type', v)} placeholder="Select…" />
+          <TextField label="Sub Group" value={draft.sub_group} onChange={(v) => update('sub_group', v)} placeholder="Sub group if applicable" />
+        </FieldGrid>
+        <Toggle label="Henderson Account" hint="Henderson is a Ronnoco brand"
+                checked={draft.henderson_account} onChange={(v) => update('henderson_account', v)} />
+        <Toggle label="Change of Ownership" hint="Existing account changing hands"
+                checked={draft.change_of_ownership} onChange={(v) => update('change_of_ownership', v)} />
+        {draft.change_of_ownership && (
+          <div className="space-y-3 pl-4 ml-1 border-l-2 border-accent-500/50">
+            <TextField label="Verify Prior Account #" value={draft.prior_account_num} onChange={(v) => update('prior_account_num', v)} placeholder="Previous account number" />
+            <TextareaField label="Change of Ownership Details" rows={3} value={draft.change_details} onChange={(v) => update('change_details', v)} placeholder="Describe the change…" />
+          </div>
+        )}
+      </Section>
+
+      {/* ─── Section 3: Chain & Location ─── */}
+      <Section number="3" title="Chain & Location">
+        <Toggle label="Chain Store" hint="This location is part of a chain or franchise"
+                checked={draft.chain_store} onChange={(v) => update('chain_store', v)} />
+        {draft.chain_store && (
+          <FieldGrid cols={2}>
+            <TextField label="Existing Chain Ronnoco Group #" value={draft.chain_group_num} onChange={(v) => update('chain_group_num', v)} placeholder="Group #" />
+            <TextField label="Number of Locations" type="number" value={draft.number_of_locations} onChange={(v) => update('number_of_locations', v)} placeholder="Total store count" />
+          </FieldGrid>
+        )}
         <FieldGrid cols={2}>
           <TextField span={2} label="Store / Business Name (DBA)" required value={draft.store_name} onChange={(v) => update('store_name', v)} placeholder="Store or business name" />
           <TextField span={2} label="Legal Business Name" value={draft.legal_business_name} onChange={(v) => update('legal_business_name', v)} placeholder="Legal entity name if different" />
-          <TextField span={2} label="Store Address" required value={draft.address} onChange={(v) => update('address', v)} placeholder="Street address, city, state, ZIP" />
-          <TextField label="Store Phone" type="tel" value={draft.store_phone} onChange={(v) => update('store_phone', v)} placeholder="Store phone number" />
-          <TextField label="Customer Account #" value={draft.customer_account} onChange={(v) => update('customer_account', v)} placeholder="Account number if existing" />
+          <TextField span={2} label="Street Address" required value={draft.address} onChange={(v) => update('address', v)} placeholder="Street address" />
+          <TextField label="City" required value={draft.city} onChange={(v) => update('city', v)} placeholder="City" />
+          <SelectField label="State" required value={draft.state} onChange={(v) => update('state', v)} options={US_STATES.map(([code, name]) => ({ value: code, label: `${code} — ${name}` }))} placeholder="Select state…" />
+          <TextField label="Zip Code" required value={draft.zip_code} onChange={(v) => update('zip_code', v)} placeholder="Zip" />
+          <TextField label="Store Phone" type="tel" value={draft.store_phone} onChange={(v) => update('store_phone', v)} placeholder="Store phone" />
         </FieldGrid>
-        <Toggle label="Chain Store" hint="This location is part of a chain or franchise"
-                checked={draft.chain_store === 'Yes'}
-                onChange={(v) => update('chain_store', v ? 'Yes' : 'No')} />
       </Section>
 
-      {/* Section 3: Sales Information */}
-      <Section number="3" title="Sales Information">
+      {/* ─── Section 4: Primary Contact ─── */}
+      <Section number="4" title="Primary Contact">
         <FieldGrid cols={2}>
-          <TextField label="Sales Rep Name" required value={draft.sales_rep} onChange={(v) => update('sales_rep', v)} placeholder="Your full name" />
-          <TextField label="Sales Rep Email" required type="email" value={draft.sales_rep_email} onChange={(v) => update('sales_rep_email', v)} placeholder="rep@ronnoco.com" />
-          <SelectField label="ROM / Region" required value={draft.rom} onChange={(v) => update('rom', v)} options={ROM_OPTIONS} placeholder="Select region…" />
-          <SelectField label="Coffee Program" value={draft.coffee_program} onChange={(v) => update('coffee_program', v)} options={COFFEE_PROGRAM_OPTIONS} placeholder="Select program…" />
+          <TextField label="Contact First Name" required value={draft.contact_first_name} onChange={(v) => update('contact_first_name', v)} placeholder="First name" />
+          <TextField label="Contact Last Name"  required value={draft.contact_last_name}  onChange={(v) => update('contact_last_name', v)}  placeholder="Last name" />
+          <TextField label="Contact Cell Phone" type="tel" value={draft.contact_cell} onChange={(v) => update('contact_cell', v)} placeholder="(555) 000-0000" />
+          <TextField label="Contact Email" required type="email" value={draft.contact_email} onChange={(v) => update('contact_email', v)} placeholder="customer@email.com" />
         </FieldGrid>
       </Section>
 
-      {/* Section 4: Deal Information */}
-      <Section number="4" title="Deal Information">
+      {/* ─── Section 5: Coffee Program & Delivery ─── */}
+      <Section number="5" title="Coffee Program & Delivery">
+        <FieldGrid cols={2}>
+          <LookupSelect label="Coffee Program" listState={coffeeProgramList} value={draft.coffee_program} onChange={(v) => update('coffee_program', v)} placeholder="Select program…" />
+          <LookupSelect label="Distribution Method" required listState={distributionList} value={draft.distribution_method} onChange={(v) => update('distribution_method', v)} placeholder="DSD or Indirect…" />
+          <TextField label="How will it be delivered?" value={draft.delivery_method} onChange={(v) => update('delivery_method', v)} placeholder="e.g. truck, courier" />
+          <TextField label="Final Delivery Recurrence" value={draft.delivery_recurrence} onChange={(v) => update('delivery_recurrence', v)} placeholder="e.g. weekly, bi-weekly" />
+          <TextField label="Current Coffee Supplier" value={draft.current_coffee_supplier} onChange={(v) => update('current_coffee_supplier', v)} placeholder="Existing supplier name" />
+          <TextField label="Parts & Service Option" value={draft.parts_service_option} onChange={(v) => update('parts_service_option', v)} placeholder="e.g. covered, T&M" />
+        </FieldGrid>
+      </Section>
+
+      {/* ─── Section 6: Distributor — only if Indirect ─── */}
+      {isIndirect && (
+        <Section number="6" title="Distributor Information">
+          <FieldGrid cols={2}>
+            <LookupSelect label="Parent Distributor" required listState={distributorList} value={draft.parent_distributor} onChange={(v) => update('parent_distributor', v)} placeholder="Select distributor…" />
+            <TextField label="Parent Distributor #" value={draft.parent_distributor_num} onChange={(v) => update('parent_distributor_num', v)} placeholder="Distributor #" />
+            {isCoreMark && (
+              <TextField label="Core-Mark Specific Div #" value={draft.core_mark_div_num} onChange={(v) => update('core_mark_div_num', v)} placeholder="Division #" span={2} />
+            )}
+            <TextField label="Distributor Warehouse" value={draft.distributor_warehouse} onChange={(v) => update('distributor_warehouse', v)} placeholder="Warehouse" />
+            <TextField label="Distributor's Customer #" value={draft.distributor_customer_num} onChange={(v) => update('distributor_customer_num', v)} placeholder="Customer #" />
+            <TextField label="Distributor Rep Name" value={draft.distributor_rep_name} onChange={(v) => update('distributor_rep_name', v)} placeholder="Rep name" />
+            <TextField label="Distributor Rep Email" type="email" value={draft.distributor_rep_email} onChange={(v) => update('distributor_rep_email', v)} placeholder="rep@distributor.com" hint="Used for installation scheduling notifications" />
+            <TextField label="Distributor Rep Contact Number" type="tel" value={draft.distributor_rep_phone} onChange={(v) => update('distributor_rep_phone', v)} placeholder="Phone" />
+          </FieldGrid>
+        </Section>
+      )}
+
+      {/* ─── Section 7: ROM ─── */}
+      <Section number={isIndirect ? '7' : '6'} title="Ronnoco Region (ROM)">
+        <FieldGrid cols={2}>
+          <LookupSelect label="Select the ROM" required listState={romPersonList} value={draft.rom_person} onChange={(v) => update('rom_person', v)} placeholder="Select ROM…" />
+          <TextField
+            label="ROM Email"
+            value={draft.rom_email}
+            onChange={(v) => update('rom_email', v)}
+            placeholder="Auto-filled from ROM selection"
+            hint={draft.rom_person && !draft.rom_email ? 'Not yet on file — admin can add via Dropdown Lists' : null}
+          />
+          <LookupSelect label="ROM Region" listState={romRegionList} value={draft.rom_region} onChange={(v) => update('rom_region', v)} placeholder="Select region…" span={2} />
+        </FieldGrid>
+      </Section>
+
+      {/* ─── Section 8: Equipment & Deal Info ─── */}
+      <Section number={isIndirect ? '8' : '7'} title="Equipment & Deal Information">
         <div className="mb-4">
           <Label required>Deal Type</Label>
           <div className="flex flex-wrap gap-2 mt-1">
-            {DEAL_TYPE_OPTIONS.map((opt) => {
-              const isFinanceType = opt === 'Equipment Lease' || opt === 'Finance Equipment';
+            {dealTypeList.options.map((opt) => {
+              const isFinanceType = opt.value === 'Lease Equipment' || opt.value === 'Finance Equipment';
               const disabled = isFinanceType && equipmentItems.length > 0 && !qualifiesForFinance;
               return (
                 <button
-                  key={opt}
+                  key={opt.value}
                   type="button"
-                  onClick={() => !disabled && update('deal_type', opt)}
+                  onClick={() => !disabled && update('deal_type', opt.value)}
                   disabled={disabled}
-                  title={disabled ? `Total must be at least ${formatUSD(LEASE_MIN_PRICE)} for ${opt}` : undefined}
+                  title={disabled ? `Total must be at least ${formatUSD(LEASE_MIN_PRICE)} for ${opt.value}` : undefined}
                   className={`px-3 py-1.5 rounded-full border text-xs md:text-sm transition-colors
-                    ${draft.deal_type === opt
+                    ${draft.deal_type === opt.value
                       ? 'bg-navy-900 border-navy-900 text-chalk-50'
                       : disabled
                         ? 'bg-page-50 border-page-200 text-slate-400 cursor-not-allowed'
                         : 'bg-white border-page-200 text-slate-700 hover:border-navy-300'}`}
                 >
-                  {opt}
+                  {opt.value}
                 </button>
               );
             })}
@@ -313,18 +517,15 @@ export default function DealBuilder({ profile, session, navigate }) {
           )}
         </div>
 
-        {/* Equipment Selection */}
+        {/* Equipment picker */}
         <div className="mb-4">
           <Label required>Equipment Selection</Label>
           <div className="border border-page-200 rounded-lg bg-page-50 p-3 md:p-4">
             {equipmentItems.length === 0 ? (
               <div className="text-center py-4">
                 <p className="text-sm text-slate-500 mb-3">No equipment selected yet.</p>
-                <button
-                  type="button"
-                  onClick={() => setPickerOpen(true)}
-                  className="px-4 py-2 bg-navy-900 text-chalk-50 text-sm font-medium rounded hover:bg-navy-800 transition-colors"
-                >
+                <button type="button" onClick={() => setPickerOpen(true)}
+                        className="px-4 py-2 bg-navy-900 text-chalk-50 text-sm font-medium rounded hover:bg-navy-800 transition-colors">
                   + Add equipment
                 </button>
               </div>
@@ -341,18 +542,13 @@ export default function DealBuilder({ profile, session, navigate }) {
                   ))}
                 </ul>
                 <div className="flex items-center justify-between pt-3 border-t border-page-200">
-                  <button
-                    type="button"
-                    onClick={() => setPickerOpen(true)}
-                    className="text-sm text-navy-700 hover:text-navy-900 font-medium"
-                  >
+                  <button type="button" onClick={() => setPickerOpen(true)}
+                          className="text-sm text-navy-700 hover:text-navy-900 font-medium">
                     + Add another item
                   </button>
                   <div className="text-sm">
                     <span className="text-slate-600">Total:</span>{' '}
-                    <span className="font-mono tabular-nums font-medium text-slate-900">
-                      {formatUSD(dealTotal)}
-                    </span>
+                    <span className="font-mono tabular-nums font-medium text-slate-900">{formatUSD(dealTotal)}</span>
                   </div>
                 </div>
               </>
@@ -361,41 +557,42 @@ export default function DealBuilder({ profile, session, navigate }) {
         </div>
 
         <FieldGrid cols={2}>
-          <TextField label="Target Install Date" required type="date" value={draft.target_install_date} onChange={(v) => update('target_install_date', v)} />
+          <TextField label="Coffee Spend (Last 3 Months)" type="number" value={draft.coffee_spend_3mo} onChange={(v) => update('coffee_spend_3mo', v)} placeholder="$0" hint="Customer's coffee-related spend, last 3 months" />
+          <TextField label="Expected Monthly Sales" type="number" value={draft.expected_monthly_sales} onChange={(v) => update('expected_monthly_sales', v)} placeholder="$0" hint="Customer's projected monthly sales" />
         </FieldGrid>
-
-        <Toggle label="Emergency Install" hint="This deal requires priority installation scheduling"
-                checked={draft.emergency_install === 'Yes'}
-                onChange={(v) => update('emergency_install', v ? 'Yes' : 'No')} />
       </Section>
 
-      {/* Section 5: Distribution */}
-      <Section number="5" title="Distribution">
+      {/* ─── Section 9: Installation ─── */}
+      <Section number={isIndirect ? '9' : '8'} title="Installation">
         <FieldGrid cols={2}>
-          <TextField label="Parent Distributor" required value={draft.parent_distributor} onChange={(v) => update('parent_distributor', v)} placeholder="Distributor name" />
-          <TextField label="Sub Group" value={draft.sub_group} onChange={(v) => update('sub_group', v)} placeholder="Sub group if applicable" />
-          <TextField label="Distributor Rep Email" required type="email" value={draft.distributor_rep_email} onChange={(v) => update('distributor_rep_email', v)} placeholder="rep@distributor.com" hint="Used for installation scheduled notifications" />
-          <SelectField label="Graphics Package" value={draft.graphics_package} onChange={(v) => update('graphics_package', v)} options={GRAPHICS_OPTIONS} placeholder="Select package…" />
+          <TextField label="Target Install Date" required type="date" value={draft.target_install_date} onChange={(v) => update('target_install_date', v)} />
+          <TextField label="Need By Date" type="date" value={draft.need_by_date} onChange={(v) => update('need_by_date', v)} hint="Hard deadline if different from target" />
         </FieldGrid>
+        <Toggle label="Emergency Install" hint="This deal requires priority installation scheduling"
+                checked={draft.emergency_install} onChange={(v) => update('emergency_install', v)} />
+        {draft.emergency_install && (
+          <div className="pl-4 ml-1 border-l-2 border-accent-500/50">
+            <TextareaField label="Emergency Install Details" rows={3} value={draft.emergency_install_details} onChange={(v) => update('emergency_install_details', v)} placeholder="Why is this urgent?" />
+          </div>
+        )}
       </Section>
 
-      {/* Section 6: Notes */}
-      <Section number="6" title="Additional Notes">
-        <label className="block">
-          <Label>Notes</Label>
-          <textarea
-            value={draft.notes}
-            onChange={(e) => update('notes', e.target.value)}
-            rows={4}
-            placeholder="Any additional information, special requirements, or context for this deal…"
-            className="w-full px-3 py-2 bg-page-50 border border-page-200 rounded text-sm
-                       focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10 focus:bg-white
-                       focus:outline-none transition-colors resize-y"
-          />
-        </label>
+      {/* ─── Section 10: Graphics ─── */}
+      <Section number={isIndirect ? '10' : '9'} title="Graphics">
+        <FieldGrid cols={2}>
+          <LookupSelect span={2} label="Graphics Package" listState={graphicsList} value={draft.graphics_package} onChange={(v) => update('graphics_package', v)} placeholder="Select package…" />
+        </FieldGrid>
+        <Toggle label="Ship Graphics with Equipment" checked={draft.ship_graphics_with_equip} onChange={(v) => update('ship_graphics_with_equip', v)} />
+        <Toggle label="Existing Custom Graphics" hint="Customer already has custom graphics on file"
+                checked={draft.has_custom_graphics} onChange={(v) => update('has_custom_graphics', v)} />
       </Section>
 
-      {/* Deal Summary — shows cost / lease estimate / cash-sale notice */}
+      {/* ─── Section 11: Notes ─── */}
+      <Section number={isIndirect ? '11' : '10'} title="Additional Notes">
+        <TextareaField label="Notes" rows={4} value={draft.notes} onChange={(v) => update('notes', v)} placeholder="Any additional information, special requirements, or context for this deal…" />
+      </Section>
+
+      {/* ─── Deal Summary ─── */}
       {equipmentItems.length > 0 && (
         <DealSummary
           total={dealTotal}
@@ -405,19 +602,16 @@ export default function DealBuilder({ profile, session, navigate }) {
         />
       )}
 
-      {/* Submit */}
+      {/* ─── Submit ─── */}
       <div className="bg-white border border-page-200 rounded-lg p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="text-sm text-slate-600 max-w-md">
           <div className="font-medium text-slate-900 mb-0.5">Ready to submit?</div>
           This deal will be created in the pipeline at the Submitted stage and the leasing team will be notified.
         </div>
-        <button
-          onClick={submitDeal}
-          disabled={submitting || !isDealPipelineConfigured}
-          className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
-                     hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
-                     transition-colors whitespace-nowrap"
-        >
+        <button onClick={submitDeal} disabled={submitting || !isDealPipelineConfigured}
+                className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
+                           hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
+                           transition-colors whitespace-nowrap">
           {submitting ? 'Submitting…' : 'Submit Deal →'}
         </button>
       </div>
@@ -431,7 +625,6 @@ export default function DealBuilder({ profile, session, navigate }) {
       {pickerOpen && (
         <EquipmentPicker
           onPick={(eq) => {
-            // Don't allow duplicates — bump quantity instead if already added
             setEquipmentItems((prev) => {
               const existing = prev.findIndex((it) => it.equipment_id === eq.id);
               if (existing !== -1) {
@@ -456,7 +649,7 @@ export default function DealBuilder({ profile, session, navigate }) {
   );
 }
 
-/* ─── Deal Summary card ─── */
+/* ───────────────────────── Deal Summary ───────────────────────── */
 
 function DealSummary({ total, monthlyEstimate, qualifies, dealType }) {
   return (
@@ -466,25 +659,16 @@ function DealSummary({ total, monthlyEstimate, qualifies, dealType }) {
       </header>
       <div className="p-4 md:p-5">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {/* Equipment cost — always shown */}
           <div className="bg-page-50 border border-page-200 rounded-lg p-4">
-            <div className="text-xs uppercase tracking-wider text-slate-500 mb-1 font-medium">
-              Equipment Cost
-            </div>
+            <div className="text-xs uppercase tracking-wider text-slate-500 mb-1 font-medium">Equipment Cost</div>
             <div className="font-mono tabular-nums text-2xl font-medium text-slate-900">
               ${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
-            <div className="text-[11px] text-slate-500 mt-1">
-              Total list price of all selected equipment
-            </div>
+            <div className="text-[11px] text-slate-500 mt-1">Total list price of all selected equipment</div>
           </div>
-
-          {/* Lease estimate or cash-sale notice */}
           {qualifies ? (
             <div className="bg-accent-500/5 border border-accent-500/30 rounded-lg p-4">
-              <div className="text-xs uppercase tracking-wider text-accent-700 mb-1 font-medium">
-                Monthly Lease Estimate
-              </div>
+              <div className="text-xs uppercase tracking-wider text-accent-700 mb-1 font-medium">Monthly Lease Estimate</div>
               <div className="font-mono tabular-nums text-2xl font-medium text-navy-900">
                 ${Math.round(monthlyEstimate).toLocaleString()}
                 <span className="text-sm text-slate-500 font-sans font-normal">/mo</span>
@@ -496,20 +680,16 @@ function DealSummary({ total, monthlyEstimate, qualifies, dealType }) {
             </div>
           ) : (
             <div className="bg-slate-50 border border-slate-200 rounded-lg p-4">
-              <div className="text-xs uppercase tracking-wider text-slate-600 mb-1 font-medium">
-                Cash Sale Only
-              </div>
+              <div className="text-xs uppercase tracking-wider text-slate-600 mb-1 font-medium">Cash Sale Only</div>
               <div className="text-sm text-slate-800 font-medium leading-snug">
                 Deal total under ${LEASE_MIN_PRICE.toLocaleString()}
               </div>
               <div className="text-[11px] text-slate-600 mt-1 leading-relaxed">
-                Equipment lease and finance options require a minimum deal value of ${LEASE_MIN_PRICE.toLocaleString()}.
-                This deal can only be sold as a purchase.
+                Equipment lease and finance options require a minimum deal value of ${LEASE_MIN_PRICE.toLocaleString()}. This deal can only be sold as a purchase.
               </div>
             </div>
           )}
         </div>
-
         {dealType && (
           <div className="mt-4 pt-3 border-t border-page-200 flex items-center justify-between text-sm">
             <span className="text-slate-600">Deal type</span>
@@ -521,7 +701,7 @@ function DealSummary({ total, monthlyEstimate, qualifies, dealType }) {
   );
 }
 
-/* ─── Form primitives ─── */
+/* ───────────────────────── Form primitives ───────────────────────── */
 
 function Section({ number, title, children }) {
   return (
@@ -534,12 +714,10 @@ function Section({ number, title, children }) {
     </section>
   );
 }
-
 function FieldGrid({ cols, children }) {
   const colClass = cols === 3 ? 'md:grid-cols-3' : 'md:grid-cols-2';
   return <div className={`grid grid-cols-1 ${colClass} gap-3 md:gap-4`}>{children}</div>;
 }
-
 function Label({ children, required }) {
   return (
     <span className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1 font-semibold">
@@ -547,7 +725,6 @@ function Label({ children, required }) {
     </span>
   );
 }
-
 function TextField({ label, required, type = 'text', value, onChange, placeholder, hint, span, disabled }) {
   return (
     <label className={`block ${span === 2 ? 'md:col-span-2' : ''}`}>
@@ -566,10 +743,25 @@ function TextField({ label, required, type = 'text', value, onChange, placeholde
     </label>
   );
 }
-
-function SelectField({ label, required, value, onChange, options, placeholder }) {
+function TextareaField({ label, value, onChange, placeholder, rows = 3, span = 2 }) {
   return (
-    <label className="block">
+    <label className={`block ${span === 2 ? 'md:col-span-2' : ''}`}>
+      <Label>{label}</Label>
+      <textarea
+        value={value ?? ''}
+        onChange={(e) => onChange(e.target.value)}
+        rows={rows}
+        placeholder={placeholder}
+        className="w-full px-3 py-2 bg-page-50 border border-page-200 rounded text-sm
+                   focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10 focus:bg-white
+                   focus:outline-none transition-colors resize-y"
+      />
+    </label>
+  );
+}
+function SelectField({ label, required, value, onChange, options, placeholder, span }) {
+  return (
+    <label className={`block ${span === 2 ? 'md:col-span-2' : ''}`}>
       <Label required={required}>{label}</Label>
       <select
         value={value || ''}
@@ -579,12 +771,32 @@ function SelectField({ label, required, value, onChange, options, placeholder })
                    focus:outline-none transition-colors"
       >
         <option value="">{placeholder}</option>
-        {options.map((opt) => <option key={opt} value={opt}>{opt}</option>)}
+        {options.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
       </select>
     </label>
   );
 }
-
+/** LookupSelect — like SelectField but pulls options from a useLookupList result */
+function LookupSelect({ label, required, listState, value, onChange, placeholder, span }) {
+  const { options, loading, error } = listState;
+  return (
+    <label className={`block ${span === 2 ? 'md:col-span-2' : ''}`}>
+      <Label required={required}>{label}</Label>
+      <select
+        value={value || ''}
+        onChange={(e) => onChange(e.target.value)}
+        disabled={loading}
+        className="w-full px-3 py-2 bg-page-50 border border-page-200 rounded text-sm
+                   focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10 focus:bg-white
+                   focus:outline-none transition-colors disabled:opacity-60"
+      >
+        <option value="">{loading ? 'Loading…' : placeholder}</option>
+        {options.map((opt) => <option key={opt.value} value={opt.value}>{opt.value}</option>)}
+      </select>
+      {error && <span className="block text-[11px] text-bad mt-1">Couldn't load list: {error}</span>}
+    </label>
+  );
+}
 function Toggle({ label, hint, checked, onChange }) {
   return (
     <div className="flex items-center gap-3 mt-3 cursor-pointer select-none"
@@ -600,7 +812,6 @@ function Toggle({ label, hint, checked, onChange }) {
     </div>
   );
 }
-
 function EquipmentRow({ item, onQuantityChange, onRemove }) {
   return (
     <li className="flex items-start gap-3 bg-white border border-page-200 rounded p-3">
@@ -613,25 +824,18 @@ function EquipmentRow({ item, onQuantityChange, onRemove }) {
         {item.model && <div className="text-xs text-slate-500">{item.model}</div>}
       </div>
       <div className="flex items-center gap-2 flex-shrink-0">
-        <input
-          type="number"
-          min="1"
-          value={item.quantity}
-          onChange={(e) => onQuantityChange(parseInt(e.target.value, 10) || 1)}
-          className="w-14 px-2 py-1 bg-white border border-page-200 rounded text-sm text-center"
-        />
+        <input type="number" min="1" value={item.quantity}
+               onChange={(e) => onQuantityChange(parseInt(e.target.value, 10) || 1)}
+               className="w-14 px-2 py-1 bg-white border border-page-200 rounded text-sm text-center" />
         <div className="text-right">
           <div className="font-mono tabular-nums text-sm text-slate-900">
             ${((item.list_price ?? 0) * item.quantity).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           {item.quantity > 1 && (
-            <div className="text-[10px] text-slate-400">
-              ${(item.list_price ?? 0).toLocaleString()} ea
-            </div>
+            <div className="text-[10px] text-slate-400">${(item.list_price ?? 0).toLocaleString()} ea</div>
           )}
         </div>
-        <button onClick={onRemove} type="button"
-                className="text-slate-400 hover:text-bad p-1" aria-label="Remove">
+        <button onClick={onRemove} type="button" className="text-slate-400 hover:text-bad p-1" aria-label="Remove">
           <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
             <path d="M18 6 6 18M6 6l12 12" />
           </svg>

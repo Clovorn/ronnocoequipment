@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase.js';
 import EquipmentPicker from '../EquipmentPicker.jsx';
 
@@ -146,7 +146,38 @@ function BundleEditor({ bundle, userId, onClose, onSaved, onDeleted }) {
   const [error, setError] = useState(null);
   const [pickerOpen, setPickerOpen] = useState(false);
 
+  // Image upload state
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
+
   const update = (k, v) => setDraft((p) => ({ ...p, [k]: v }));
+
+  // Upload a new bundle image to the bundle-images bucket and set image_url in the draft.
+  // Filename is timestamped so a re-upload never collides; old images stay in the
+  // bucket as orphans (intentional — admins may want to roll back).
+  async function handleFileSelected(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploading(true);
+    setError(null);
+
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'jpg';
+    const path = `bundle-${Date.now()}.${ext}`;
+
+    const { error: upErr } = await supabase.storage
+      .from('bundle-images')
+      .upload(path, file, { cacheControl: '3600', upsert: false });
+
+    if (upErr) {
+      setUploading(false);
+      setError(`Upload failed: ${upErr.message}`);
+      return;
+    }
+
+    const { data } = supabase.storage.from('bundle-images').getPublicUrl(path);
+    update('image_url', data.publicUrl);
+    setUploading(false);
+  }
 
   useEffect(() => {
     if (isNew) return;
@@ -291,7 +322,51 @@ function BundleEditor({ bundle, userId, onClose, onSaved, onDeleted }) {
                       value={draft.description || ''} onChange={(v) => update('description', v)} />
             <Textarea label="Long description" rows={4}
                       value={draft.long_description || ''} onChange={(v) => update('long_description', v)} />
-            <Input label="Image URL" type="url" value={draft.image_url || ''} onChange={(v) => update('image_url', v)} />
+
+            {/* Bundle image — uploader with thumbnail preview, Replace + Remove actions */}
+            <div>
+              <span className="block text-xs uppercase tracking-wider text-slate-600 mb-1.5 font-medium">
+                Bundle image
+              </span>
+              <div className="flex items-start gap-4">
+                <div className="w-32 h-24 flex-shrink-0 flex items-center justify-center
+                                bg-page-50 border border-page-200 rounded overflow-hidden">
+                  {draft.image_url ? (
+                    <img src={draft.image_url} alt="Bundle preview" className="w-full h-full object-cover" />
+                  ) : (
+                    <span className="text-[10px] text-slate-400 uppercase tracking-wider">No image</span>
+                  )}
+                </div>
+                <div className="flex flex-col gap-2">
+                  <input
+                    ref={fileRef}
+                    type="file"
+                    accept="image/png,image/jpeg,image/webp"
+                    onChange={handleFileSelected}
+                    className="hidden"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => fileRef.current?.click()}
+                    disabled={uploading}
+                    className="px-3 py-2 text-sm border border-page-200 bg-white rounded
+                               hover:bg-page-50 disabled:opacity-40 transition-colors">
+                    {uploading ? 'Uploading…' : draft.image_url ? 'Replace image' : 'Upload image'}
+                  </button>
+                  {draft.image_url && (
+                    <button
+                      type="button"
+                      onClick={() => update('image_url', '')}
+                      className="text-xs text-bad hover:underline self-start">
+                      Remove
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="text-[11px] text-slate-500 mt-2">
+                PNG, JPG, or WebP. Max 10 MB. Landscape orientation works best (shown as a banner on the bundle detail page).
+              </p>
+            </div>
           </section>
 
           {/* Pricing */}
