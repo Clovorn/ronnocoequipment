@@ -63,7 +63,7 @@ export default function App() {
       )}
 
       {route.name === 'catalog' && (
-        <CatalogBrowser canEdit={canEdit} userId={userId} />
+        <CatalogBrowser canEdit={canEdit} role={role} userId={userId} />
       )}
 
       {route.name === 'bundles' && (
@@ -71,7 +71,7 @@ export default function App() {
       )}
 
       {route.name === 'favorites' && (
-        <CatalogBrowser canEdit={canEdit} userId={userId} favoritesOnly={true} />
+        <CatalogBrowser canEdit={canEdit} role={role} userId={userId} favoritesOnly={true} />
       )}
 
       {route.name === 'vendor' && (
@@ -79,6 +79,7 @@ export default function App() {
           slug={route.params.slug}
           navigate={navigate}
           canEdit={canEdit}
+          role={role}
           userId={userId}
         />
       )}

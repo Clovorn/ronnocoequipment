@@ -1,13 +1,19 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
 
-const EDITABLE_FIELDS = [
+// Fields visible to everyone (read via v_equipment_detail — no cost, no notes).
+// The manual URL override fields (manufacturer_url, spec_sheet_url, etc.) are
+// intentionally NOT listed here — they're maintenance fields used when a
+// vendor's URL template doesn't produce the right link for a specific item.
+// The columns still exist in the database and the vendor link buttons at the
+// top of the drawer still respect any overrides that are set. They've just
+// been removed from the editable form to keep the drawer focused.
+const PUBLIC_FIELDS = [
   { key: 'description', label: 'Description', type: 'text' },
   { key: 'long_description', label: 'Long Description', type: 'textarea' },
   { key: 'model', label: 'Model', type: 'text' },
   { key: 'subcategory', label: 'Subcategory', type: 'text' },
   { key: 'list_price', label: 'List Price', type: 'currency' },
-  { key: 'cost', label: 'Cost', type: 'currency' },
   { key: 'price_10_49', label: 'Price 10–49 units', type: 'currency' },
   { key: 'price_50_plus', label: 'Price 50+ units', type: 'currency' },
   { key: 'lease_monthly_price', label: 'Lease Monthly', type: 'currency' },
@@ -15,27 +21,35 @@ const EDITABLE_FIELDS = [
   { key: 'lease_eligible', label: 'Lease eligible', type: 'boolean' },
   { key: 'loan_eligible', label: 'Loan eligible', type: 'boolean' },
   { key: 'active', label: 'Active', type: 'boolean' },
-  { key: 'manufacturer_url', label: 'Manufacturer URL (override)', type: 'url' },
-  { key: 'spec_sheet_url', label: 'Spec sheet URL (override)', type: 'url' },
-  { key: 'primary_image_url', label: 'Primary image URL (override)', type: 'url' },
-  { key: 'drawing_url', label: 'Drawing URL (override)', type: 'url' },
-  { key: 'cad_url', label: 'CAD URL (override)', type: 'url' },
+];
+
+// Fields only privileged users (admin/director) can see and edit.
+// These come from a separate, server-authorized fetch.
+const PRIVILEGED_FIELDS = [
+  { key: 'cost', label: 'Cost', type: 'currency' },
   { key: 'notes', label: 'Internal notes', type: 'textarea' },
 ];
 
-export default function ItemDetailDrawer({ item, canEdit, isFavorited, onToggleFavorite, onClose, onUpdated }) {
+export default function ItemDetailDrawer({ item, canEdit, role, isFavorited, onToggleFavorite, onClose, onUpdated }) {
+  const isPrivileged = role === 'admin' || role === 'director';
+
+  // fullRow holds the public fields (from v_equipment_detail). Always loaded.
   const [fullRow, setFullRow] = useState(null);
+  // privilegedRow holds the privileged fields (cost, notes). Only loaded for admin/director.
+  const [privilegedRow, setPrivilegedRow] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [draft, setDraft] = useState({});
+  const [draft, setDraft] = useState({}); // edits to public fields
+  const [privDraft, setPrivDraft] = useState({}); // edits to cost/notes
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [savedToast, setSavedToast] = useState(false);
 
+  // Load the public row
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     supabase
-      .from('equipment')
+      .from('v_equipment_detail')
       .select('*')
       .eq('id', item.id)
       .single()
@@ -48,6 +62,29 @@ export default function ItemDetailDrawer({ item, canEdit, isFavorited, onToggleF
     return () => { cancelled = true; };
   }, [item.id]);
 
+  // Load the privileged row separately, via the secure RPC, only for admin/director
+  useEffect(() => {
+    if (!isPrivileged) {
+      setPrivilegedRow(null);
+      return;
+    }
+    let cancelled = false;
+    supabase
+      .rpc('get_equipment_with_cost', { p_equipment_id: item.id })
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          // Don't block the drawer — just log; the public fields still work
+          console.warn('Could not load privileged fields:', error.message);
+          setPrivilegedRow(null);
+        } else {
+          setPrivilegedRow(data);
+          setPrivDraft({});
+        }
+      });
+    return () => { cancelled = true; };
+  }, [item.id, isPrivileged]);
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
     window.addEventListener('keydown', onKey);
@@ -55,34 +92,62 @@ export default function ItemDetailDrawer({ item, canEdit, isFavorited, onToggleF
   }, [onClose]);
 
   const value = (key) => (key in draft ? draft[key] : fullRow?.[key]);
-  const isDirty = Object.keys(draft).length > 0;
+  const privValue = (key) => (key in privDraft ? privDraft[key] : privilegedRow?.[key]);
+  const isDirty = Object.keys(draft).length > 0 || Object.keys(privDraft).length > 0;
+
   const update = (key, val) => setDraft((prev) => ({ ...prev, [key]: val }));
+  const updatePriv = (key, val) => setPrivDraft((prev) => ({ ...prev, [key]: val }));
 
   async function save() {
     setSaving(true); setError(null);
-    const { data, error } = await supabase.from('equipment').update(draft).eq('id', item.id).select().single();
-    setSaving(false);
-    if (error) { setError(error.message); return; }
-    setFullRow(data); setDraft({});
+
+    // Save public fields if any are dirty
+    if (Object.keys(draft).length > 0) {
+      const { data, error } = await supabase
+        .from('equipment')
+        .update(draft)
+        .eq('id', item.id)
+        .select()
+        .single();
+      if (error) { setSaving(false); setError(error.message); return; }
+      // Refresh the local row from the public view (so we don't leak fields)
+      const { data: refreshed } = await supabase
+        .from('v_equipment_detail').select('*').eq('id', item.id).single();
+      if (refreshed) setFullRow(refreshed);
+      onUpdated?.(data);
+    }
+
+    // Save privileged fields separately, via the secure RPC
+    if (Object.keys(privDraft).length > 0 && isPrivileged) {
+      const { error } = await supabase.rpc('update_equipment_cost', {
+        p_equipment_id: item.id,
+        p_cost: 'cost' in privDraft ? privDraft.cost : null,
+        p_notes: 'notes' in privDraft ? privDraft.notes : null,
+      });
+      if (error) { setSaving(false); setError(error.message); return; }
+      // Refresh the privileged row
+      const { data: refreshed } = await supabase
+        .rpc('get_equipment_with_cost', { p_equipment_id: item.id });
+      if (refreshed) setPrivilegedRow(refreshed);
+    }
+
+    setDraft({}); setPrivDraft({});
     setSavedToast(true);
     setTimeout(() => setSavedToast(false), 2000);
-    onUpdated?.(data);
+    setSaving(false);
   }
 
-  function discard() { setDraft({}); setError(null); }
+  function discard() { setDraft({}); setPrivDraft({}); setError(null); }
 
   return (
     <>
-      <div onClick={onClose}
-           className="fixed inset-0 bg-navy-950/50 backdrop-blur-[2px] z-40" />
+      <div onClick={onClose} className="fixed inset-0 bg-navy-950/50 backdrop-blur-[2px] z-40" />
 
-      {/* Drawer: right-rail on desktop, bottom-sheet on mobile */}
       <aside className="fixed bg-white shadow-elevated z-50 overflow-y-auto border-page-200
                         inset-x-0 bottom-0 top-12 rounded-t-2xl border-t
                         md:inset-y-0 md:right-0 md:left-auto md:top-0 md:max-w-2xl md:w-full
                         md:rounded-t-none md:border-l md:border-t-0">
 
-        {/* Mobile grabber */}
         <div className="md:hidden flex justify-center pt-2 pb-1">
           <div className="w-10 h-1 rounded-full bg-page-300" />
         </div>
@@ -99,11 +164,9 @@ export default function ItemDetailDrawer({ item, canEdit, isFavorited, onToggleF
           </div>
           <div className="flex items-center gap-1 ml-2">
             {onToggleFavorite && (
-              <button
-                onClick={onToggleFavorite}
-                className="p-2 hover:bg-white/10 rounded transition-colors"
-                aria-label={isFavorited ? 'Unfavorite' : 'Favorite'}
-              >
+              <button onClick={onToggleFavorite}
+                      className="p-2 hover:bg-white/10 rounded transition-colors"
+                      aria-label={isFavorited ? 'Unfavorite' : 'Favorite'}>
                 <svg className={`w-5 h-5 ${isFavorited ? 'text-accent-500' : 'text-chalk-100'}`}
                      fill={isFavorited ? 'currentColor' : 'none'}
                      stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
@@ -156,12 +219,32 @@ export default function ItemDetailDrawer({ item, canEdit, isFavorited, onToggleF
                 </h3>
               </div>
               <div className="space-y-4">
-                {EDITABLE_FIELDS.map((field) => (
+                {PUBLIC_FIELDS.map((field) => (
                   <EditableField key={field.key} field={field} value={value(field.key)}
                                  onChange={(v) => update(field.key, v)} disabled={!canEdit} />
                 ))}
               </div>
             </section>
+
+            {/* Privileged section — only rendered for admin/director */}
+            {isPrivileged && privilegedRow && (
+              <section className="border-t border-page-200 pt-6">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-xs uppercase tracking-[0.2em] text-slate-500 font-medium">
+                    Confidential
+                    <span className="ml-2 text-[10px] normal-case tracking-wider text-accent-700 bg-accent-500/10 px-1.5 py-0.5 rounded font-bold">
+                      Admin only
+                    </span>
+                  </h3>
+                </div>
+                <div className="space-y-4">
+                  {PRIVILEGED_FIELDS.map((field) => (
+                    <EditableField key={field.key} field={field} value={privValue(field.key)}
+                                   onChange={(v) => updatePriv(field.key, v)} disabled={!canEdit} />
+                  ))}
+                </div>
+              </section>
+            )}
           </div>
         )}
 
@@ -179,7 +262,7 @@ export default function ItemDetailDrawer({ item, canEdit, isFavorited, onToggleF
               {savedToast && <span className="text-ok font-medium">✓ Saved</span>}
               {!savedToast && isDirty && (
                 <span className="text-xs md:text-sm">
-                  {Object.keys(draft).length} unsaved change{Object.keys(draft).length === 1 ? '' : 's'}
+                  {Object.keys(draft).length + Object.keys(privDraft).length} unsaved change{(Object.keys(draft).length + Object.keys(privDraft).length) === 1 ? '' : 's'}
                 </span>
               )}
             </div>

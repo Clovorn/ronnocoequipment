@@ -4,11 +4,11 @@ import { useFavorites } from '../lib/useFavorites.js';
 import { useVendors } from '../lib/useVendors.js';
 import ItemDetailDrawer from './ItemDetailDrawer.jsx';
 
-export default function VendorPage({ slug, navigate, canEdit, userId }) {
+export default function VendorPage({ slug, navigate, canEdit, role, userId }) {
   const vendorsList = useVendors();
   const favorites = useFavorites(userId);
   const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+  const [itemsLoading, setItemsLoading] = useState(false);
   const [error, setError] = useState(null);
   const [openCategoryId, setOpenCategoryId] = useState(null); // start closed per design choice
   const [search, setSearch] = useState('');
@@ -17,11 +17,18 @@ export default function VendorPage({ slug, navigate, canEdit, userId }) {
   // Resolve slug -> vendor record
   const vendor = vendorsList.bySlug[slug] || null;
 
-  // Load this vendor's items once we know which vendor we are
+  // Load this vendor's items once we know which vendor we are.
+  // Use vendor_id from the resolved vendor (not slug) so the filter works
+  // regardless of casing or any slug normalization quirks.
   useEffect(() => {
-    if (!vendor?.id) return;
+    if (!vendor?.id) {
+      // No vendor yet; reset state so we don't show stale items from a previous vendor
+      setItems([]);
+      return;
+    }
     let cancelled = false;
-    setLoading(true);
+    setItemsLoading(true);
+    setError(null);
     supabase
       .from('v_catalog')
       .select('*')
@@ -29,9 +36,13 @@ export default function VendorPage({ slug, navigate, canEdit, userId }) {
       .order('description')
       .then(({ data, error }) => {
         if (cancelled) return;
-        if (error) setError(error.message);
-        else setItems(data || []);
-        setLoading(false);
+        if (error) {
+          setError(error.message);
+          setItems([]);
+        } else {
+          setItems(data || []);
+        }
+        setItemsLoading(false);
       });
     return () => { cancelled = true; };
   }, [vendor?.id]);
@@ -144,7 +155,7 @@ export default function VendorPage({ slug, navigate, canEdit, userId }) {
         </svg>
       </div>
 
-      {loading && <div className="py-10 text-center text-slate-500 text-sm">Loading products…</div>}
+      {itemsLoading && <div className="py-10 text-center text-slate-500 text-sm">Loading products…</div>}
 
       {error && (
         <div className="p-4 bg-red-50 border border-red-200 rounded">
@@ -152,7 +163,7 @@ export default function VendorPage({ slug, navigate, canEdit, userId }) {
         </div>
       )}
 
-      {!loading && !error && categoryGroups.length === 0 && (
+      {!itemsLoading && !error && categoryGroups.length === 0 && (
         <div className="bg-white border border-page-200 rounded-lg py-12 text-center">
           <p className="text-slate-500 text-sm">
             {search ? 'No products match your search.' : 'No products from this vendor yet.'}
@@ -161,7 +172,7 @@ export default function VendorPage({ slug, navigate, canEdit, userId }) {
       )}
 
       {/* Accordion of categories */}
-      {!loading && !error && categoryGroups.length > 0 && (
+      {!itemsLoading && !error && categoryGroups.length > 0 && (
         <div className="space-y-2">
           {categoryGroups.map((group) => {
             const isOpen = openCategoryId === group.id || openCategoryId === '__all_open__';
@@ -189,6 +200,7 @@ export default function VendorPage({ slug, navigate, canEdit, userId }) {
         <ItemDetailDrawer
           item={selectedItem}
           canEdit={canEdit}
+          role={role}
           isFavorited={favorites.isFavorited(selectedItem.id)}
           onToggleFavorite={() => favorites.toggle(selectedItem.id)}
           onClose={() => setSelectedItem(null)}

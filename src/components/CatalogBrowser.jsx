@@ -6,7 +6,7 @@ import ItemDetailDrawer from './ItemDetailDrawer.jsx';
 const PAGE_SIZE_DESKTOP = 50;
 const PAGE_SIZE_MOBILE = 25;
 
-export default function CatalogBrowser({ canEdit, userId, favoritesOnly = false }) {
+export default function CatalogBrowser({ canEdit, role, userId, favoritesOnly = false }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -316,6 +316,7 @@ export default function CatalogBrowser({ canEdit, userId, favoritesOnly = false 
           <ItemDetailDrawer
             item={selectedItem}
             canEdit={canEdit}
+            role={role}
             isFavorited={favorites.isFavorited(selectedItem.id)}
             onToggleFavorite={() => favorites.toggle(selectedItem.id)}
             onClose={() => setSelectedItem(null)}
