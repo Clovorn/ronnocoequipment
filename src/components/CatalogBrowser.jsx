@@ -222,7 +222,7 @@ export default function CatalogBrowser({ canEdit, role, userId, favoritesOnly = 
                       <Th sortKey="description" current={sortKey} dir={sortDir} onClick={toggleSort}>Description</Th>
                       <Th sortKey="category" current={sortKey} dir={sortDir} onClick={toggleSort}>Category</Th>
                       <Th sortKey="list_price" current={sortKey} dir={sortDir} onClick={toggleSort} align="right">List</Th>
-                      <th className="px-3 py-3 text-center w-12 font-medium">Lease</th>
+                      <th className="px-3 py-3 text-right font-medium w-32">Lease /mo</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -245,8 +245,17 @@ export default function CatalogBrowser({ canEdit, role, userId, favoritesOnly = 
                             ? `$${item.list_price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                             : '—'}
                         </td>
-                        <td className="px-3 py-3 text-center">
-                          {item.lease_eligible && <span className="inline-block w-2 h-2 rounded-full bg-accent-500" title="Lease eligible" />}
+                        <td className="px-3 py-3 text-right">
+                          {item.lease_monthly_estimate != null ? (
+                            <span className="inline-flex items-center gap-1.5 font-mono tabular-nums text-sm text-accent-700 font-medium">
+                              <span className="w-1.5 h-1.5 rounded-full bg-accent-500" />
+                              ${Math.round(item.lease_monthly_estimate).toLocaleString()}
+                            </span>
+                          ) : (
+                            <span className="text-[10px] uppercase tracking-wider text-slate-400">
+                              Not eligible
+                            </span>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -290,10 +299,10 @@ export default function CatalogBrowser({ canEdit, role, userId, favoritesOnly = 
                           ? `$${item.list_price.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
                           : '—'}
                       </div>
-                      {item.lease_eligible && (
-                        <div className="inline-flex items-center gap-1 mt-1 text-[10px] uppercase tracking-wider text-accent-600 font-medium">
+                      {item.lease_monthly_estimate != null && (
+                        <div className="inline-flex items-center gap-1 mt-1 text-xs font-mono tabular-nums text-accent-700 font-medium">
                           <span className="w-1.5 h-1.5 rounded-full bg-accent-500" />
-                          Lease
+                          ${Math.round(item.lease_monthly_estimate).toLocaleString()}/mo
                         </div>
                       )}
                     </div>

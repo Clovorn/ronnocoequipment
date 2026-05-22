@@ -282,10 +282,10 @@ function CategoryAccordion({ group, isOpen, onToggle, onItemClick, favorites }) 
                         ? `$${item.list_price.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}`
                         : '—'}
                     </div>
-                    {item.lease_eligible && (
-                      <div className="inline-flex items-center gap-1 mt-0.5 text-[10px] uppercase tracking-wider text-accent-600 font-medium">
+                    {item.lease_monthly_estimate != null && (
+                      <div className="inline-flex items-center gap-1 mt-0.5 text-xs font-mono tabular-nums text-accent-700 font-medium">
                         <span className="w-1 h-1 rounded-full bg-accent-500" />
-                        Lease
+                        ${Math.round(item.lease_monthly_estimate).toLocaleString()}/mo
                       </div>
                     )}
                   </div>

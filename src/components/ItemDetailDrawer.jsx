@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
+import { computeLeaseMonthly, LEASE_MIN_PRICE } from '../lib/leasing.js';
 
 // Fields visible to everyone (read via v_equipment_detail — no cost, no notes).
 // The manual URL override fields (manufacturer_url, spec_sheet_url, etc.) are
@@ -16,9 +17,8 @@ const PUBLIC_FIELDS = [
   { key: 'list_price', label: 'List Price', type: 'currency' },
   { key: 'price_10_49', label: 'Price 10–49 units', type: 'currency' },
   { key: 'price_50_plus', label: 'Price 50+ units', type: 'currency' },
-  { key: 'lease_monthly_price', label: 'Lease Monthly', type: 'currency' },
   { key: 'finance_eligible', label: 'Finance eligible', type: 'boolean' },
-  { key: 'lease_eligible', label: 'Lease eligible', type: 'boolean' },
+  { key: 'lease_eligible', label: 'Lease eligible (admin override)', type: 'boolean' },
   { key: 'loan_eligible', label: 'Loan eligible', type: 'boolean' },
   { key: 'active', label: 'Active', type: 'boolean' },
 ];
@@ -212,6 +212,11 @@ export default function ItemDetailDrawer({ item, canEdit, role, isFavorited, onT
               </section>
             )}
 
+            {/* Leasing summary — shows the computed monthly payment if eligible,
+                or an explanation if the item is below the $5K minimum. Items
+                under $5K can still be in bundled lease programs; that's noted. */}
+            <LeasingSummary item={item} listPrice={value('list_price')} />
+
             <section>
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xs uppercase tracking-[0.2em] text-slate-500 font-medium">
@@ -282,6 +287,66 @@ export default function ItemDetailDrawer({ item, canEdit, role, isFavorited, onT
         )}
       </aside>
     </>
+  );
+}
+
+/**
+ * LeasingSummary — shows the lease eligibility outcome for this item.
+ * - If list price >= $5,000: shows the computed monthly payment.
+ * - If under $5,000: explains that the item isn't lease-eligible standalone,
+ *   but notes that it can be included in bundled lease programs.
+ *
+ * Prefers item.lease_monthly_estimate (computed server-side via v_catalog)
+ * but falls back to client-side compute if not present.
+ */
+function LeasingSummary({ item, listPrice }) {
+  // The price might be live-edited in the form, so use the latest value
+  const effectivePrice = listPrice ?? item.list_price;
+  const serverEstimate = item.lease_monthly_estimate;
+  // If list price was edited but no new estimate yet, compute locally
+  const monthly =
+    listPrice != null && listPrice !== item.list_price
+      ? computeLeaseMonthly(effectivePrice)
+      : serverEstimate ?? computeLeaseMonthly(effectivePrice);
+
+  const eligible = monthly != null;
+
+  return (
+    <section>
+      <h3 className="text-xs uppercase tracking-[0.2em] text-slate-500 mb-3 font-medium">
+        Leasing
+      </h3>
+      {eligible ? (
+        <div className="bg-accent-500/5 border border-accent-500/30 rounded-lg p-4 flex items-center justify-between gap-4">
+          <div>
+            <div className="text-xs uppercase tracking-wider text-accent-700 font-medium mb-0.5">
+              Monthly lease estimate
+            </div>
+            <div className="text-[11px] text-slate-600">
+              List price × 0.0395
+            </div>
+          </div>
+          <div className="text-right">
+            <div className="font-mono tabular-nums text-2xl font-medium text-navy-900">
+              ${Math.round(monthly).toLocaleString()}
+              <span className="text-sm text-slate-500 font-sans font-normal">/mo</span>
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-page-50 border border-page-200 rounded-lg p-4">
+          <div className="text-sm text-slate-700 font-medium mb-1">
+            Not lease-eligible on its own
+          </div>
+          <div className="text-xs text-slate-600 leading-relaxed">
+            {effectivePrice == null
+              ? `Set a list price to see the lease eligibility.`
+              : `List price ($${effectivePrice.toLocaleString()}) is below the $${LEASE_MIN_PRICE.toLocaleString()} minimum for standalone leasing.`}
+            {' '}This item can still be included in a bundled lease program.
+          </div>
+        </div>
+      )}
+    </section>
   );
 }
 
