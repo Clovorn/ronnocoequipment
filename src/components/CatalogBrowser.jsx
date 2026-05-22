@@ -2,12 +2,11 @@ import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
 import { useFavorites } from '../lib/useFavorites.js';
 import ItemDetailDrawer from './ItemDetailDrawer.jsx';
-import AnnouncementsStrip from './AnnouncementsStrip.jsx';
 
 const PAGE_SIZE_DESKTOP = 50;
 const PAGE_SIZE_MOBILE = 25;
 
-export default function CatalogBrowser({ canEdit, userId, favoritesOnly = false, showAnnouncements = true }) {
+export default function CatalogBrowser({ canEdit, userId, favoritesOnly = false }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -106,8 +105,6 @@ export default function CatalogBrowser({ canEdit, userId, favoritesOnly = false,
 
   return (
     <>
-      {showAnnouncements && !favoritesOnly && <AnnouncementsStrip />}
-
       <div className="px-4 md:px-6 lg:px-10 py-4 md:py-6">
         <div className="mb-4 md:mb-6">
           <div className="flex items-end justify-between gap-3 mb-3 md:mb-5">

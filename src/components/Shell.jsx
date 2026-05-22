@@ -2,45 +2,52 @@ import RonnocoLogo from './RonnocoLogo.jsx';
 import { signOut } from '../lib/useAuth.js';
 
 const TABS = [
-  { key: 'catalog',    label: 'Catalog',    icon: CatalogIcon },
-  { key: 'bundles',    label: 'Bundles',    icon: BundlesIcon },
-  { key: 'favorites',  label: 'Favorites',  icon: StarIcon },
+  { key: 'home',       label: 'Home',       routeName: 'home',       icon: HomeIcon },
+  { key: 'catalog',    label: 'Catalog',    routeName: 'catalog',    icon: CatalogIcon },
+  { key: 'bundles',    label: 'Bundles',    routeName: 'bundles',    icon: BundlesIcon },
+  { key: 'favorites',  label: 'Favorites',  routeName: 'favorites',  icon: StarIcon },
 ];
 
-const ADMIN_TAB = { key: 'admin', label: 'Admin', icon: AdminIcon };
+const ADMIN_TAB = { key: 'admin', label: 'Admin', routeName: 'admin', icon: AdminIcon };
 
-export default function Shell({ profile, session, currentTab, onTabChange, children }) {
+/**
+ * Shell takes a `routeName` (one of 'home','catalog','bundles','favorites','admin',
+ * 'vendor','vendors','not-found') and a `navigate(name, params)` function.
+ * It highlights the corresponding tab. Vendor / vendors pages bucket under 'home'
+ * for navigation highlighting since they're reached from there.
+ */
+export default function Shell({ profile, session, routeName, navigate, children }) {
   const role = profile?.role || 'sales';
   const isAdmin = role === 'admin' || role === 'director';
   const tabs = isAdmin ? [...TABS, ADMIN_TAB] : TABS;
   const roleLabel = { admin: 'Admin', director: 'Director', sales: 'Sales', customer: 'Customer' }[role];
 
+  // For highlighting, treat vendor sub-pages as part of 'home'
+  const activeTab =
+    routeName === 'vendor' || routeName === 'vendors' ? 'home' : routeName;
+
   return (
     <div className="min-h-screen bg-page-50 pb-16 md:pb-0">
-      {/* Desktop top nav — dark navy */}
       <header className="bg-navy-900 text-chalk-50 shadow-navbar sticky top-0 z-30">
         <div className="px-4 md:px-6 lg:px-10 py-3 md:py-4 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-4">
+          <button onClick={() => navigate('home')}
+                  className="flex items-center gap-4 group" aria-label="Go to home">
             <RonnocoLogo variant="on-dark" />
             <div className="hidden md:block h-6 w-px bg-chalk-50/15" />
             <div className="hidden md:block">
-              <div className="text-xs uppercase tracking-[0.18em] text-chalk-300 font-medium">
+              <div className="text-xs uppercase tracking-[0.18em] text-chalk-300 group-hover:text-chalk-50 transition-colors font-medium">
                 Equipment Catalog
               </div>
             </div>
-          </div>
+          </button>
 
-          {/* Desktop tab nav — inline in header */}
           <nav className="hidden md:flex items-center gap-1">
             {tabs.map((t) => (
-              <button
-                key={t.key}
-                onClick={() => onTabChange(t.key)}
-                className={`px-3 py-1.5 text-sm rounded transition-colors font-medium
-                  ${currentTab === t.key
-                    ? 'bg-white/10 text-chalk-50'
-                    : 'text-chalk-200 hover:text-chalk-50 hover:bg-white/5'}`}
-              >
+              <button key={t.key} onClick={() => navigate(t.routeName)}
+                      className={`px-3 py-1.5 text-sm rounded transition-colors font-medium
+                        ${activeTab === t.key
+                          ? 'bg-white/10 text-chalk-50'
+                          : 'text-chalk-200 hover:text-chalk-50 hover:bg-white/5'}`}>
                 {t.label}
               </button>
             ))}
@@ -55,13 +62,10 @@ export default function Shell({ profile, session, currentTab, onTabChange, child
                 {roleLabel}
               </div>
             </div>
-            <button
-              onClick={() => signOut()}
-              className="text-sm text-chalk-200 hover:text-chalk-50 transition-colors
-                         px-2 sm:px-3 py-1.5 hover:bg-white/5 rounded"
-              aria-label="Sign out"
-              title="Sign out"
-            >
+            <button onClick={() => signOut()}
+                    className="text-sm text-chalk-200 hover:text-chalk-50 transition-colors
+                               px-2 sm:px-3 py-1.5 hover:bg-white/5 rounded"
+                    aria-label="Sign out" title="Sign out">
               <span className="hidden sm:inline">Sign out</span>
               <svg className="sm:hidden w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
@@ -74,28 +78,25 @@ export default function Shell({ profile, session, currentTab, onTabChange, child
       <main>{children}</main>
 
       <footer className="hidden md:flex px-6 lg:px-10 py-6 mt-12 border-t border-page-200 text-xs text-slate-500 justify-between">
-        <span>Ronnoco Equipment Catalog · v0.2</span>
+        <span>Ronnoco Equipment Catalog · v0.3</span>
         <span className="font-mono">{new Date().getFullYear()}</span>
       </footer>
 
-      {/* Mobile bottom tab bar — sticky, thumb-zone reachable */}
+      {/* Mobile bottom tab bar */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-page-200 z-40
                       shadow-[0_-2px_8px_rgba(10,31,61,0.05)]">
-        <div className={`grid ${isAdmin ? 'grid-cols-4' : 'grid-cols-3'}`}>
+        <div className={`grid ${isAdmin ? 'grid-cols-5' : 'grid-cols-4'}`}>
           {tabs.map((t) => {
             const Icon = t.icon;
-            const active = currentTab === t.key;
+            const active = activeTab === t.key;
             return (
-              <button
-                key={t.key}
-                onClick={() => onTabChange(t.key)}
-                className={`py-2.5 flex flex-col items-center gap-0.5 transition-colors
-                  ${active ? 'text-navy-900' : 'text-slate-500 hover:text-slate-700'}`}
-                aria-label={t.label}
-              >
+              <button key={t.key} onClick={() => navigate(t.routeName)}
+                      className={`py-2.5 flex flex-col items-center gap-0.5 transition-colors
+                        ${active ? 'text-navy-900' : 'text-slate-500 hover:text-slate-700'}`}
+                      aria-label={t.label}>
                 <Icon active={active} />
                 <span className={`text-[10px] uppercase tracking-wider font-medium
-                  ${active ? 'text-navy-900' : 'text-slate-500'}`}>
+                                  ${active ? 'text-navy-900' : 'text-slate-500'}`}>
                   {t.label}
                 </span>
               </button>
@@ -107,6 +108,13 @@ export default function Shell({ profile, session, currentTab, onTabChange, child
   );
 }
 
+function HomeIcon({ active }) {
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="m3 12 2-2m0 0 7-7 7 7M5 10v10a1 1 0 0 0 1 1h3m10-11 2 2m-2-2v10a1 1 0 0 1-1 1h-3m-6 0a1 1 0 0 0 1-1v-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v4a1 1 0 0 0 1 1m-6 0h6" />
+    </svg>
+  );
+}
 function CatalogIcon({ active }) {
   return (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} viewBox="0 0 24 24">

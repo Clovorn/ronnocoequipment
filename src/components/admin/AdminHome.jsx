@@ -3,7 +3,7 @@ export default function AdminHome({ onNavigate }) {
     {
       key: 'announcements',
       title: 'Announcements',
-      description: 'Manage promotions, special deals, and news posts shown above the catalog.',
+      description: 'Manage promotions, special deals, and news posts shown on the home page.',
       icon: AnnouncementsIcon,
     },
     {
@@ -12,28 +12,28 @@ export default function AdminHome({ onNavigate }) {
       description: 'Create and edit equipment bundles with included items and pricing.',
       icon: BundlesIcon,
     },
+    {
+      key: 'vendors',
+      title: 'Vendors',
+      description: 'Upload vendor logos, set display names, choose which appear on the home page.',
+      icon: VendorIcon,
+    },
   ];
 
   return (
     <div className="px-4 md:px-6 lg:px-10 py-4 md:py-6">
       <div className="mb-6 md:mb-8">
-        <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">
-          Admin
-        </p>
+        <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">Admin</p>
         <h1 className="text-2xl md:text-3xl font-light text-slate-900">Manage content</h1>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 max-w-3xl">
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4 max-w-5xl">
         {cards.map((card) => {
           const Icon = card.icon;
           return (
-            <button
-              key={card.key}
-              onClick={() => onNavigate(card.key)}
-              className="text-left bg-white border border-page-200 rounded-lg p-5 md:p-6
-                         hover:border-navy-300 hover:shadow-card transition-all
-                         active:bg-navy-50"
-            >
+            <button key={card.key} onClick={() => onNavigate(card.key)}
+                    className="text-left bg-white border border-page-200 rounded-lg p-5 md:p-6
+                               hover:border-navy-300 hover:shadow-card transition-all active:bg-navy-50">
               <div className="flex items-start gap-4">
                 <div className="w-10 h-10 rounded-lg bg-navy-900 text-chalk-50 flex items-center justify-center flex-shrink-0">
                   <Icon />
@@ -52,7 +52,6 @@ export default function AdminHome({ onNavigate }) {
         <p className="mb-2 font-medium text-slate-700">Coming soon</p>
         <ul className="space-y-1">
           <li>• User management — add reps, set roles, deactivate accounts</li>
-          <li>• Vendor link templates — edit auto-resolved URL patterns per vendor</li>
           <li>• Price history audit log — review equipment price changes over time</li>
           <li>• Bulk import / export — CSV updates to the catalog</li>
         </ul>
@@ -69,12 +68,18 @@ function AnnouncementsIcon() {
     </svg>
   );
 }
-
 function BundlesIcon() {
   return (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round"
             d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+    </svg>
+  );
+}
+function VendorIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M19 21V5a2 2 0 0 0-2-2H7a2 2 0 0 0-2 2v16M9 9h.01M9 13h.01M9 17h.01M15 9h.01M15 13h.01M15 17h.01M3 21h18" />
     </svg>
   );
 }
