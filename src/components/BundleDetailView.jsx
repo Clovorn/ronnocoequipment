@@ -78,7 +78,7 @@ export default function BundleDetailView({ bundle, onClose }) {
             <img
               src={bundle.image_url}
               alt={bundle.name}
-              className="w-full h-48 md:h-64 object-cover rounded-lg border border-page-200 bg-page-100"
+              className="w-full h-48 md:h-64 object-contain rounded-lg border border-page-200 bg-page-100"
             />
           )}
 

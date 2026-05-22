@@ -126,7 +126,7 @@ function BundleCard({ bundle, onClick }) {
 
       {bundle.image_url ? (
         <img src={bundle.image_url} alt={bundle.name}
-             className="w-full h-32 object-cover rounded mb-3 bg-page-100" />
+             className="w-full h-32 object-contain rounded mb-3 bg-page-100" />
       ) : (
         <div className="w-full h-32 rounded mb-3 bg-gradient-to-br from-navy-100 to-page-100
                         flex items-center justify-center">

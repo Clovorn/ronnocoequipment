@@ -332,7 +332,7 @@ function BundleEditor({ bundle, userId, onClose, onSaved, onDeleted }) {
                 <div className="w-32 h-24 flex-shrink-0 flex items-center justify-center
                                 bg-page-50 border border-page-200 rounded overflow-hidden">
                   {draft.image_url ? (
-                    <img src={draft.image_url} alt="Bundle preview" className="w-full h-full object-cover" />
+                    <img src={draft.image_url} alt="Bundle preview" className="w-full h-full object-contain" />
                   ) : (
                     <span className="text-[10px] text-slate-400 uppercase tracking-wider">No image</span>
                   )}
