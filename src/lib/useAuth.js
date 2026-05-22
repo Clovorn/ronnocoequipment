@@ -13,6 +13,11 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (!supabase) {
+      setLoading(false);
+      return;
+    }
+
     let cancelled = false;
 
     async function loadProfile(userId) {

@@ -1,8 +1,28 @@
+import { supabaseMissing } from './lib/supabase.js';
 import { useAuth, signOut } from './lib/useAuth.js';
 import LoginScreen from './components/LoginScreen.jsx';
 import CatalogBrowser from './components/CatalogBrowser.jsx';
 
 export default function App() {
+  if (supabaseMissing) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-cream-50 p-6">
+        <div className="max-w-md text-center">
+          <div className="w-12 h-12 rounded-full bg-ink-900 text-cream-50 flex items-center justify-center font-serif text-xl mx-auto mb-4">
+            R
+          </div>
+          <h1 className="font-serif text-2xl text-ink-900 mb-2">Configuration Required</h1>
+          <p className="text-ink-600 text-sm leading-relaxed">
+            The Supabase environment variables are not set.
+            Add <code className="font-mono text-copper-600 bg-cream-100 px-1 rounded">VITE_SUPABASE_URL</code> and{' '}
+            <code className="font-mono text-copper-600 bg-cream-100 px-1 rounded">VITE_SUPABASE_ANON_KEY</code> to
+            your Netlify site's environment variables, then redeploy.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const { session, profile, loading } = useAuth();
 
   if (loading) {
