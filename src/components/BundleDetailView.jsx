@@ -88,7 +88,9 @@ export default function BundleDetailView({ bundle, onClose, onStartDeal }) {
             <p className="text-sm text-slate-700 leading-relaxed">{bundle.long_description}</p>
           )}
 
-          {/* Pricing summary — v27 model: starts-at fee only */}
+          {/* Pricing summary — v29: at the bundle's default load the customer
+              pays exactly target_monthly_fee. Substitutions and add-ons move
+              the monthly forward. The detail view shows the base tier price. */}
           <div className="bg-page-50 border border-page-200 rounded-lg p-4">
             <div className="text-xs uppercase tracking-wider text-slate-500 mb-1 font-medium">
               Program Lease
@@ -96,12 +98,12 @@ export default function BundleDetailView({ bundle, onClose, onStartDeal }) {
             {startsAt != null ? (
               <>
                 <div className="font-mono tabular-nums text-2xl font-medium text-navy-900">
-                  <span className="text-sm text-slate-500 font-sans font-normal mr-1">starts at</span>
                   ${startsAt.toLocaleString(undefined, { minimumFractionDigits: 0 })}
                   <span className="text-sm text-slate-500 font-sans font-normal">/mo</span>
                 </div>
                 <div className="text-xs text-slate-500 mt-0.5">
-                  {termMonths}-month term · Final monthly is computed from the equipment selected.
+                  {termMonths}-month term · Customer's actual monthly is computed from
+                  the equipment included on their deal.
                 </div>
               </>
             ) : (

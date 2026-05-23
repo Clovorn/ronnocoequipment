@@ -136,12 +136,21 @@ function BundleCard({ bundle, onClick, onStartDeal }) {
                   hover:shadow-card
                   ${bundle.featured ? 'border-accent-500/40 ring-1 ring-accent-500/20' : 'border-page-200'}`}
     >
-      {bundle.featured && (
-        <div className="inline-block mb-2 text-[10px] uppercase tracking-wider font-bold
-                        text-accent-700 bg-accent-500/10 px-2 py-0.5 rounded">
-          Featured
-        </div>
-      )}
+      {/* v29: every distributor bundle gets a "Program Bundle" identifier
+          badge. Featured stays as a separate accent that admins toggle to
+          highlight specific bundles. */}
+      <div className="flex flex-wrap items-center gap-1.5 mb-2">
+        <span className="inline-block text-[10px] uppercase tracking-wider font-bold
+                         text-navy-700 bg-navy-100 px-2 py-0.5 rounded">
+          Program Bundle
+        </span>
+        {bundle.featured && (
+          <span className="inline-block text-[10px] uppercase tracking-wider font-bold
+                           text-accent-700 bg-accent-500/10 px-2 py-0.5 rounded">
+            Featured
+          </span>
+        )}
+      </div>
 
       <div onClick={onClick} className="cursor-pointer active:bg-navy-50 -mx-1 -mt-1 px-1 pt-1 rounded">
         {bundle.image_url ? (
@@ -179,7 +188,6 @@ function BundleCard({ bundle, onClick, onStartDeal }) {
           </div>
           {startsAt != null && (
             <div className="font-mono tabular-nums text-base font-medium text-navy-900">
-              <span className="text-xs text-slate-500 font-sans font-normal mr-1">starts at</span>
               ${startsAt.toLocaleString(undefined, { minimumFractionDigits: 0 })}
               <span className="text-xs text-slate-500 font-sans font-normal">/mo</span>
             </div>

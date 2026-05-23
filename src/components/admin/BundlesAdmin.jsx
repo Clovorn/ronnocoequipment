@@ -434,13 +434,32 @@ function BundleEditor({ bundle, userId, onClose, onSaved, onDeleted }) {
                   update('soft_cost_pct', Number.isFinite(pct) ? pct / 100 : 0.25);
                 }}
               />
-              <Input
-                label="Service & media reserve ($)"
-                hint="Added to lease basis. Hidden from customer."
-                type="number"
-                value={draft.service_reserve ?? 1080}
-                onChange={(v) => update('service_reserve', v)}
-              />
+              {/* v29: when target_monthly_fee is set, the service reserve is
+                  back-solved automatically — manual edits would be ignored.
+                  We swap to a read-only display so the admin sees what the
+                  math is using and isn't surprised by their input not sticking. */}
+              {draft.target_monthly_fee != null && draft.target_monthly_fee !== '' ? (
+                <div>
+                  <label className="block text-xs uppercase tracking-wider text-slate-500 mb-1 font-medium">
+                    Service &amp; media reserve ($)
+                  </label>
+                  <div className="px-3 py-2 bg-page-100 border border-page-200 rounded text-sm text-slate-700">
+                    <span className="font-mono">Computed from target</span>
+                  </div>
+                  <p className="text-[10px] text-slate-500 mt-1 leading-relaxed">
+                    Back-solved from target monthly fee + default equipment.
+                    Clear the target above to set this manually.
+                  </p>
+                </div>
+              ) : (
+                <Input
+                  label="Service & media reserve ($)"
+                  hint="Added to lease basis. Hidden from customer."
+                  type="number"
+                  value={draft.service_reserve ?? 1080}
+                  onChange={(v) => update('service_reserve', v)}
+                />
+              )}
             </div>
 
             <details className="text-xs text-slate-600">
@@ -638,13 +657,24 @@ function BundlePricingPreview({ bundle, items }) {
   }, [items]);
 
   const pricing = useMemo(
-    () => calculateBundlePricing({ bundle, equipment }),
+    // v29: pass the bundle's items as `defaultEquipment` so the math helper
+    // can back-solve the service reserve from target_monthly_fee. Inside
+    // BundlesAdmin the "current equipment" and the "default equipment" are
+    // the same thing — this is the bundle's setup, not a deal being built
+    // on top of it.
+    () => calculateBundlePricing({ bundle, equipment, defaultEquipment: equipment }),
     [bundle, equipment]
   );
 
   const target = bundle?.target_monthly_fee != null && bundle?.target_monthly_fee !== ''
     ? parseFloat(bundle.target_monthly_fee)
     : null;
+
+  // v29: calibration metadata exposes whether the reserve was back-solved
+  // from the target. Used to show "calibrated" hint + warnings.
+  const wasCalibrated = pricing.calibration != null;
+  const reserveWasNegative = wasCalibrated && pricing.calibration.wasNegative;
+  const reserveWasFloored  = wasCalibrated && pricing.calibration.wasFloored;
 
   return (
     <div className="bg-page-50 border border-page-200 rounded-lg p-4">
@@ -670,7 +700,7 @@ function BundlePricingPreview({ bundle, items }) {
           value={formatCurrency(pricing.softCost)}
         />
         <PreviewRow
-          label="Service & media reserve"
+          label={wasCalibrated ? 'Service & media reserve (calibrated)' : 'Service & media reserve'}
           value={formatCurrency(pricing.reserve)}
           muted
         />
@@ -693,19 +723,63 @@ function BundlePricingPreview({ bundle, items }) {
         />
       </div>
 
+      {/* v29: target / calibration hint */}
       {target != null && Number.isFinite(target) && (
         <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">
-          Marketed starting fee: <span className="font-mono">{formatMonthly(target)}/mo</span>.{' '}
-          Computed monthly:{' '}
-          <span className="font-mono font-medium text-slate-700">
-            {formatMonthly(pricing.monthlyCharged)}/mo
-          </span>
-          {target !== pricing.monthlyCharged && (
+          Marketed monthly fee: <span className="font-mono">{formatMonthly(target)}/mo</span>.{' '}
+          {wasCalibrated && !reserveWasNegative ? (
             <>
-              {' '}({pricing.monthlyCharged > target ? '+' : '−'}
-              ${Math.abs(pricing.monthlyCharged - target).toLocaleString()} from tier)
+              The service reserve is computed from this target and the bundle's default
+              equipment so the customer pays{' '}
+              <span className="font-mono font-medium text-slate-700">
+                {formatMonthly(target)}/mo
+              </span>{' '}
+              at the default load. Substitutions and additions change the monthly forward
+              from here.
+            </>
+          ) : (
+            <>
+              Computed monthly:{' '}
+              <span className="font-mono font-medium text-slate-700">
+                {formatMonthly(pricing.monthlyCharged)}/mo
+              </span>
+              {target !== pricing.monthlyCharged && (
+                <>
+                  {' '}({pricing.monthlyCharged > target ? '+' : '−'}
+                  ${Math.abs(pricing.monthlyCharged - target).toLocaleString()} from tier)
+                </>
+              )}
             </>
           )}
+        </p>
+      )}
+
+      {/* v29: warning when bundle equipment is too expensive for target.
+         The reserve math went negative; we floored it at $1,080 but the
+         monthly will be HIGHER than the target. Admin needs to either
+         raise the target or remove equipment. */}
+      {reserveWasNegative && (
+        <div className="mt-3 p-2.5 bg-red-50 border border-red-200 rounded">
+          <p className="text-[11px] text-bad leading-relaxed font-medium mb-1">
+            Bundle target is too low for this equipment
+          </p>
+          <p className="text-[11px] text-slate-700 leading-relaxed">
+            The math would need a negative service reserve to land at {formatMonthly(target)}/mo.
+            Either raise <span className="font-mono">target_monthly_fee</span> or remove
+            equipment from the bundle. Customer monthly above is computed with the reserve
+            floored at $1,080.
+          </p>
+        </div>
+      )}
+
+      {/* v29: notice when bundle is small and target requires a high reserve.
+         Not an error — just informational so admin understands why the
+         reserve is higher than the default $1,080. */}
+      {wasCalibrated && !reserveWasNegative && pricing.reserve > 1500 && (
+        <p className="mt-2 text-[10px] text-slate-500 leading-relaxed italic">
+          Reserve is above the $1,080 floor because the bundle's hardware total is
+          modest relative to the {formatMonthly(target)} target. Margin on the program
+          comes mostly from the reserve in this case.
         </p>
       )}
 

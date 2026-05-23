@@ -38,30 +38,105 @@ function roundHalfUp(n) {
 }
 
 /**
+ * Calibrate the service reserve so that, at the bundle's default equipment
+ * load, the customer's monthly equals the bundle's target_monthly_fee.
+ *
+ * Math:
+ *   target_lease_basis = target_monthly_fee / lease_rate
+ *   reserve = target_lease_basis - default_hardware - default_hardware × soft_cost_pct
+ *   reserve = max(reserve, reserve_floor)   ← floored at the policy minimum ($1,080)
+ *
+ * Returns:
+ *   {
+ *     reserve:   number  ← the calibrated reserve to use
+ *     wasFloored: bool   ← true if math wanted lower than floor; floor was applied
+ *     wasNegative: bool  ← true if math produced negative (bundle target too low
+ *                          for its equipment — admin should fix)
+ *     shortfall: number  ← how much MORE the math would need to clear the floor
+ *                          (or 0 if no flooring happened)
+ *   }
+ *
+ * If target_monthly_fee is not set / not numeric, returns null — the caller
+ * should fall back to the stored bundle.service_reserve.
+ */
+export function calibrateBundleReserve({
+  targetMonthlyFee,
+  leaseRate = 0.0395,
+  softCostPct = 0.25,
+  defaultHardware = 0,
+  reserveFloor = 1080,
+} = {}) {
+  if (targetMonthlyFee == null || !Number.isFinite(Number(targetMonthlyFee))) return null;
+  const target = Number(targetMonthlyFee);
+  if (target <= 0) return null;
+
+  const targetLeaseBasis = target / numberOr(leaseRate, 0.0395);
+  const softCost = numberOr(defaultHardware, 0) * numberOr(softCostPct, 0.25);
+  const raw = targetLeaseBasis - numberOr(defaultHardware, 0) - softCost;
+
+  const wasNegative = raw < 0;
+  const floored = Math.max(raw, numberOr(reserveFloor, 1080));
+  const wasFloored = raw < numberOr(reserveFloor, 1080) && !wasNegative;
+  const shortfall = wasFloored ? (numberOr(reserveFloor, 1080) - raw) : 0;
+
+  return {
+    reserve: floored,
+    wasFloored,
+    wasNegative,
+    shortfall,
+    raw,
+  };
+}
+
+/**
  * Compute everything from a bundle config + list of equipment items.
  *
- * @param {Object} bundle - { soft_cost_pct, service_reserve, lease_rate, term_months }
- * @param {Array}  equipment - [{ list_price, quantity }, ...]
- * @returns {Object} frozen pricing breakdown
+ * v29: If `defaultEquipment` is provided AND the bundle has a
+ * target_monthly_fee, the service reserve is back-solved at the default
+ * load so the bundle's default equipment produces a monthly equal to the
+ * target. Substitutions and additions then move the monthly forward as
+ * the math runs.
  *
- * Any missing/null bundle field falls back to a sensible default so this
- * function never throws on partial input. The returned `valid` field tells
- * callers whether the inputs were complete enough to trust the math.
+ * @param {Object} bundle - { soft_cost_pct, service_reserve, lease_rate, term_months, target_monthly_fee }
+ * @param {Array}  equipment - [{ list_price, quantity }, ...]
+ * @param {Array}  defaultEquipment - optional; the bundle's default items used for reserve back-solve
+ * @returns {Object} frozen pricing breakdown
  */
-export function calculateBundlePricing({ bundle, equipment }) {
+export function calculateBundlePricing({ bundle, equipment, defaultEquipment = null }) {
   const softCostPct    = numberOr(bundle?.soft_cost_pct,    0.25);
-  const serviceReserve = numberOr(bundle?.service_reserve,  1080.00);
+  const storedReserve  = numberOr(bundle?.service_reserve,  1080.00);
   const leaseRate      = numberOr(bundle?.lease_rate,       0.0395);
   const termMonths     = intOr   (bundle?.term_months,      36);
+  const target         = bundle?.target_monthly_fee;
 
   const items = Array.isArray(equipment) ? equipment : [];
 
-  // Hardware total: sum of (list_price × quantity) across all items.
+  // Hardware total of the current deal (substitutions + add-ons baked in)
   const hardware = items.reduce((sum, it) => {
     const price = numberOr(it?.list_price, 0);
     const qty   = intOr(it?.quantity, 1);
     return sum + price * qty;
   }, 0);
+
+  // Service reserve: if defaultEquipment + target are provided, back-solve
+  // from the default load. Otherwise use the stored reserve as-is.
+  let serviceReserve = storedReserve;
+  let calibration = null;
+  if (defaultEquipment && Array.isArray(defaultEquipment) && target != null) {
+    const defaultHardware = defaultEquipment.reduce((sum, it) => {
+      const price = numberOr(it?.list_price, 0);
+      const qty   = intOr(it?.quantity, 1);
+      return sum + price * qty;
+    }, 0);
+    calibration = calibrateBundleReserve({
+      targetMonthlyFee: target,
+      leaseRate,
+      softCostPct,
+      defaultHardware,
+      reserveFloor: 1080,
+    });
+    if (calibration) serviceReserve = calibration.reserve;
+  }
 
   const softCost    = hardware * softCostPct;
   const reserve     = serviceReserve;
@@ -72,8 +147,6 @@ export function calculateBundlePricing({ bundle, equipment }) {
   const eligible = leaseBasis >= LEASE_MIN_PRICE;
   const eligibilityShortfall = eligible ? 0 : (LEASE_MIN_PRICE - leaseBasis);
 
-  // Inputs are valid if bundle config is present. We don't require equipment
-  // to be non-empty — an empty bundle is a valid (uneligible) starting state.
   const valid = bundle != null
     && Number.isFinite(softCostPct)
     && Number.isFinite(serviceReserve)
@@ -94,6 +167,8 @@ export function calculateBundlePricing({ bundle, equipment }) {
     leaseBasis,
     monthlyRaw,
     monthlyCharged,
+    // v29: calibration metadata when reserve was back-solved
+    calibration,
   });
 }
 

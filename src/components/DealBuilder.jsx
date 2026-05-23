@@ -320,6 +320,11 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
    * about competing hydrations here.
    */
   const [bundleConfig, setBundleConfig] = useState(null);
+  // v29: keep the bundle's DEFAULT equipment list separate from the deal's
+  // current equipmentItems. The default list is the math helper's input for
+  // back-solving the service reserve from target_monthly_fee. equipmentItems
+  // changes as the rep substitutes; bundleDefaultItems stays frozen.
+  const [bundleDefaultItems, setBundleDefaultItems] = useState(null);
   const [bundleHydrating, setBundleHydrating] = useState(Boolean(bundleId) && !draftId && !editQuoteId);
   const [bundleError, setBundleError] = useState(null);
   const bundleMode = Boolean(bundleConfig);
@@ -499,6 +504,10 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
         setBundleConfig(bundle);
         // Pre-load the bundle's default equipment as the starting deal items.
         setEquipmentItems(items);
+        // v29: also freeze a copy of the default items for the math helper.
+        // The reserve back-solve always uses the default load, regardless of
+        // what the rep substitutes onto the deal afterwards.
+        setBundleDefaultItems(items);
         // Lock the deal_type to Lease in bundle mode. The UI surfaces this
         // as a read-only chip alongside the bundle name.
         setDraft((prev) => ({ ...prev, deal_type: 'Lease Equipment' }));
@@ -518,11 +527,20 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
    * Live calculation of the bundle math against the current equipment list.
    * Recomputes every time equipment changes. Used for the rep-side breakdown
    * UI, the eligibility check, and the snapshot stored on submit.
+   *
+   * v29: passes the bundle's DEFAULT items (bundleDefaultItems) as
+   * defaultEquipment so the math helper can back-solve the service reserve
+   * from target_monthly_fee. The customer pays exactly the target at the
+   * default load; substitutions and add-ons move the monthly forward.
    */
   const bundlePricing = useMemo(() => {
     if (!bundleConfig) return null;
-    return calculateBundlePricing({ bundle: bundleConfig, equipment: equipmentItems });
-  }, [bundleConfig, equipmentItems]);
+    return calculateBundlePricing({
+      bundle: bundleConfig,
+      equipment: equipmentItems,
+      defaultEquipment: bundleDefaultItems,
+    });
+  }, [bundleConfig, equipmentItems, bundleDefaultItems]);
 
   /* ───── Bundle-mode allowed equipment ─────
    * Lenient mode: the EquipmentPicker shows items that are EITHER
