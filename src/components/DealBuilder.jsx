@@ -7,6 +7,7 @@ import { fetchDraft, insertDraft, updateDraft, deleteDraft, defaultDraftName } f
 import { LEASE_MIN_PRICE, LEASE_RATE } from '../lib/leasing.js';
 import { useLookupList } from '../lib/useLookupList.js';
 import { useFieldRequirements, validateAgainstRequirements, fieldMetaFor } from '../lib/useFieldRequirements.js';
+import { useDirector } from '../lib/useDirector.js';
 import { US_STATES } from '../lib/usStates.js';
 import EquipmentPicker from './EquipmentPicker.jsx';
 
@@ -425,6 +426,13 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
   // Field requirements config (admin-managed: Apply to Quote / Deal / Both / Optional)
   const { rules: fieldRules } = useFieldRequirements();
 
+  // Director auto-fill (v24): fetch the rep's director once when the form
+  // mounts. We stamp director_user_id/name/email onto every submitted deal so
+  // the pipeline dashboard can filter by "my team" for directors and so
+  // notification workflows know who to email. If the rep has no director
+  // assigned, this returns null and the deal submits with null director columns.
+  const { director: myDirector, loading: directorLoading } = useDirector();
+
   /**
    * meta(fieldKey) → { visible, required, isOptional, knownToRules }
    *
@@ -571,6 +579,12 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
       sales_rep:             trimOrNull([draft.sales_rep_first_name, draft.sales_rep_last_name].filter(Boolean).join(' ')),
       sales_rep_email:       trimOrNull(draft.sales_rep_email),
       route_number:          trimOrNull(draft.route_number),
+
+      // Director (v24): auto-stamped from the rep's user_profiles.director_id
+      // at submit time. Stays null if rep has no director assigned.
+      director_user_id:      myDirector?.director_user_id || null,
+      director_name:         myDirector?.director_name || null,
+      director_email:        myDirector?.director_email || null,
 
       // Coffee program & delivery
       coffee_program:        trimOrNull(draft.coffee_program),
@@ -1359,6 +1373,35 @@ ${repName}`;
             />
           )}
         </FieldGrid>
+
+        {/* Director — read-only, auto-stamped from the rep's user profile.
+            Shown so the rep knows who'll see this deal in their dashboard.
+            If unassigned, surfaces a warning so an admin can fix it. */}
+        <div className="mt-3">
+          {directorLoading ? (
+            <div className="text-xs text-slate-500">Loading director…</div>
+          ) : myDirector ? (
+            <div className="flex items-center gap-2 text-sm bg-page-50 border border-page-200 rounded px-3 py-2">
+              <svg className="w-4 h-4 text-slate-500 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+              </svg>
+              <span className="text-slate-600">Director:</span>
+              <span className="font-medium text-slate-900">{myDirector.director_name}</span>
+              <span className="text-slate-500 text-xs">({myDirector.director_email})</span>
+            </div>
+          ) : (
+            <div className="flex items-start gap-2 text-sm bg-amber-50 border border-amber-200 rounded px-3 py-2">
+              <svg className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+              </svg>
+              <div className="text-amber-900">
+                <span className="font-medium">No director assigned.</span>
+                {' '}This deal will submit, but won't appear under any director's team view.
+                Ask an admin to assign you a director on your user profile.
+              </div>
+            </div>
+          )}
+        </div>
       </Section>
 
       {/* ─── Section: Customer Identity (deal-only) ─── */}

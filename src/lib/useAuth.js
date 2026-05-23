@@ -4,8 +4,11 @@ import { supabase } from './supabase.js';
 /**
  * useAuth: returns { session, profile, loading }
  * - session: Supabase auth session, or null
- * - profile: row from user_profiles (includes role), or null
+ * - profile: row from user_profiles (includes role + director_id), or null
  * - loading: true until the initial check completes
+ *
+ * v23+: director_id is included so the Deal Builder can auto-stamp the
+ * rep's director on each submitted deal.
  */
 export function useAuth() {
   const [session, setSession] = useState(null);
@@ -18,7 +21,7 @@ export function useAuth() {
     async function loadProfile(userId) {
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('user_id, role, display_name, active')
+        .select('user_id, role, display_name, active, director_id')
         .eq('user_id', userId)
         .maybeSingle();
       if (cancelled) return;
