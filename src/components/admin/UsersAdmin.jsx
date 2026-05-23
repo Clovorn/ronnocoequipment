@@ -45,12 +45,9 @@ export default function UsersAdmin({ onBack, currentUserId }) {
 
   async function load() {
     setLoading(true); setError(null);
-    const { data, error } = await supabase
-      .from('v_users_overview')
-      .select('*')
-      .order('active', { ascending: false })
-      .order('role')
-      .order('display_name');
+    // RPC: admin_list_users() returns the joined user_profiles + auth.users
+    // rows. Server-side gate ensures only admins can call this.
+    const { data, error } = await supabase.rpc('admin_list_users');
     setLoading(false);
     if (error) { setError(error.message); return; }
     setRows(data || []);
