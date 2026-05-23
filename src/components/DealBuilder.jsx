@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { submitDealToPipeline, logDealActivity, isDealPipelineConfigured, generateQuoteNumber } from '../lib/dealPipeline.js';
 import { LEASE_MIN_PRICE, LEASE_RATE } from '../lib/leasing.js';
 import { useLookupList } from '../lib/useLookupList.js';
+import { useFieldRequirements, validateAgainstRequirements } from '../lib/useFieldRequirements.js';
 import { US_STATES } from '../lib/usStates.js';
 import EquipmentPicker from './EquipmentPicker.jsx';
 
@@ -129,6 +130,9 @@ export default function DealBuilder({ profile, session, navigate }) {
   const romPersonList       = useLookupList('rom_person');
   const romRegionList       = useLookupList('rom_region');
 
+  // Field requirements config (admin-managed: Apply to Quote / Deal / Both / Optional)
+  const { rules: fieldRules } = useFieldRequirements();
+
   // Auto-populate ROM email when a ROM person is selected (if email is on file)
   useEffect(() => {
     if (!draft.rom_person) {
@@ -154,37 +158,52 @@ export default function DealBuilder({ profile, session, navigate }) {
   const isDSD            = draft.distribution_method === 'DSD';
   const isCoreMark       = draft.parent_distributor === 'Core-Mark';
 
-  function validate() {
-    const required = [
-      ['contact_first_name',   'Contact first name'],
-      ['contact_last_name',    'Contact last name'],
-      ['contact_email',        'Contact email'],
-      ['store_name',           'Store name'],
-      ['address',              'Street address'],
-      ['city',                 'City'],
-      ['state',                'State'],
-      ['zip_code',             'Zip code'],
-      ['customer_type',        'Customer type (C-Store / Food Service)'],
-      ['distribution_method',  'Distribution method (DSD / Indirect)'],
-      ['deal_type',            'Deal type'],
-      ['rom_person',           'ROM person'],
-      ['target_install_date',  'Target install date'],
-    ];
-    for (const [key, label] of required) {
-      if (!String(draft[key] || '').trim()) {
-        return `Missing required field: ${label}`;
-      }
-    }
-    if (isIndirect && !draft.parent_distributor) {
-      return 'Parent distributor is required when distribution method is Indirect.';
-    }
+  /**
+   * Validate the form for a given submission mode ('quote' or 'deal').
+   *
+   * Two layers:
+   *   1) Field-config layer — reads admin-managed `field_requirements` and flags
+   *      every missing required field for this mode. Conditional visibility
+   *      (e.g. emergency_install_details only when emergency_install=true) is
+   *      respected so we don't flag invisible fields.
+   *   2) Business-rule layer — hardcoded rules that aren't admin-configurable:
+   *      at least one equipment item, lease/finance ≥ $5K, customer email
+   *      required when submitting a quote (so mailto: has a recipient).
+   *
+   * Returns null when the form passes, or a string for the rep when it doesn't.
+   * The string is multi-line so the rep sees the full list at once rather than
+   * fixing one field at a time.
+   */
+  function validate(mode = 'deal') {
+    // Layer 1: field-config
+    const { errors: missing } = validateAgainstRequirements({ rules: fieldRules, draft, mode });
+
+    // Layer 2: business rules
+    const businessErrors = [];
     if (equipmentItems.length === 0) {
-      return 'Please select at least one piece of equipment.';
+      businessErrors.push('At least one piece of equipment must be selected.');
     }
     if (!qualifiesForFinance && (draft.deal_type === 'Lease Equipment' || draft.deal_type === 'Finance Equipment')) {
-      return `Deals under ${formatUSD(LEASE_MIN_PRICE)} cannot be leased or financed. Choose "Purchase From Ronnoco" instead, or add more equipment to bring the total above ${formatUSD(LEASE_MIN_PRICE)}.`;
+      businessErrors.push(`Lease and Finance require a deal total of at least ${formatUSD(LEASE_MIN_PRICE)}. Add more equipment or switch to "Purchase From Ronnoco".`);
     }
-    return null;
+    if (mode === 'quote' && !String(draft.contact_email || '').trim()) {
+      businessErrors.push('Customer email is required to send a quote (so we can open your email client with it pre-filled).');
+    }
+
+    if (missing.length === 0 && businessErrors.length === 0) return null;
+
+    const parts = [];
+    if (missing.length > 0) {
+      parts.push(
+        missing.length === 1
+          ? `Missing required field: ${missing[0]}`
+          : `Missing required fields (${missing.length}):\n  • ${missing.join('\n  • ')}`
+      );
+    }
+    if (businessErrors.length > 0) {
+      parts.push(businessErrors.join('\n'));
+    }
+    return parts.join('\n\n');
   }
 
   /**
@@ -333,7 +352,7 @@ ${repName}`;
 
   async function submitDeal() {
     setError(null);
-    const validationError = validate();
+    const validationError = validate('deal');
     if (validationError) {
       setError(validationError);
       return;
@@ -383,17 +402,13 @@ ${repName}`;
    */
   async function submitAsQuote() {
     setError(null);
-    const validationError = validate();
+    const validationError = validate('quote');
     if (validationError) {
       setError(validationError);
       return;
     }
     if (!isDealPipelineConfigured) {
       setError('Deal pipeline is not configured. An admin needs to set VITE_DEAL_PIPELINE_URL and VITE_DEAL_PIPELINE_ANON_KEY in Netlify env vars.');
-      return;
-    }
-    if (!draft.contact_email) {
-      setError('Customer email is required to send a quote (so we can open your email client with it pre-filled).');
       return;
     }
 
@@ -935,7 +950,7 @@ ${repName}`;
 
       {error && (
         <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded">
-          <p className="text-sm text-red-700">{error}</p>
+          <p className="text-sm text-red-700 whitespace-pre-line">{error}</p>
         </div>
       )}
 

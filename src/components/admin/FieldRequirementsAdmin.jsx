@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../../lib/supabase.js';
+import { invalidateFieldRequirements } from '../../lib/useFieldRequirements.js';
 
 /**
  * FieldRequirementsAdmin — manage per-field validation rules for the New Deal form.
@@ -81,6 +82,8 @@ export default function FieldRequirementsAdmin({ onBack }) {
       .eq('field_key', fieldKey);
     setSaving(false);
     if (error) { setError(error.message); return; }
+    // Bust the in-memory cache so the next DealBuilder mount picks up the change.
+    invalidateFieldRequirements();
     loadRows({ showSpinner: false });
   }
 
