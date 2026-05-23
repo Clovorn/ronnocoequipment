@@ -11,6 +11,7 @@ import AdminHome from './components/admin/AdminHome.jsx';
 import AnnouncementsAdmin from './components/admin/AnnouncementsAdmin.jsx';
 import BundlesAdmin from './components/admin/BundlesAdmin.jsx';
 import VendorsAdmin from './components/admin/VendorsAdmin.jsx';
+import FieldRequirementsAdmin from './components/admin/FieldRequirementsAdmin.jsx';
 import HeroAdmin from './components/admin/HeroAdmin.jsx';
 import LookupListsAdmin from './components/admin/LookupListsAdmin.jsx';
 import DealBuilder from './components/DealBuilder.jsx';
@@ -136,6 +137,9 @@ export default function App() {
           )}
           {route.params.section === 'lookup-lists' && (
             <LookupListsAdmin onBack={() => navigate('admin')} />
+          )}
+          {route.params.section === 'field-requirements' && (
+            <FieldRequirementsAdmin onBack={() => navigate('admin')} />
           )}
         </>
       )}

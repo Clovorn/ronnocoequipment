@@ -30,6 +30,12 @@ export default function AdminHome({ onNavigate }) {
       description: 'Manage distributors, ROMs, coffee programs, and all deal-sheet dropdown values.',
       icon: ListsIcon,
     },
+    {
+      key: 'field-requirements',
+      title: 'Field Requirements',
+      description: 'Decide which fields on the New Deal form are required for Quotes vs full Deals.',
+      icon: FieldRequirementsIcon,
+    },
   ];
 
   return (
@@ -107,6 +113,14 @@ function ListsIcon() {
   return (
     <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" />
+    </svg>
+  );
+}
+function FieldRequirementsIcon() {
+  return (
+    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round"
+            d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2m-6 9l2 2 4-4" />
     </svg>
   );
 }
