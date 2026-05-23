@@ -51,16 +51,16 @@ export default function LookupListsAdmin({ onBack }) {
     setLists(Object.entries(grouped).map(([key, counts]) => ({ key, ...counts })));
   }
 
-  async function loadRows(listKey) {
+  async function loadRows(listKey, { showSpinner = true } = {}) {
     if (!listKey) { setRows([]); return; }
-    setLoading(true);
+    if (showSpinner) setLoading(true);
     const { data, error } = await supabase
       .from('lookup_lists')
       .select('*')
       .eq('list_key', listKey)
       .order('sort_order')
       .order('value');
-    setLoading(false);
+    if (showSpinner) setLoading(false);
     if (error) { setError(error.message); return; }
     setRows(data || []);
   }
@@ -77,7 +77,9 @@ export default function LookupListsAdmin({ onBack }) {
     setSaving(false);
     if (error) { setError(error.message); return; }
     invalidateLookupList(activeKey);
-    loadRows(activeKey);
+    // Refresh without the loading spinner — keeps row inputs mounted so we
+    // don't lose the user's place / focus on a save round-trip.
+    loadRows(activeKey, { showSpinner: false });
     loadIndex();
   }
 
@@ -94,7 +96,7 @@ export default function LookupListsAdmin({ onBack }) {
     setSaving(false);
     if (error) { setError(error.message); return; }
     invalidateLookupList(activeKey);
-    loadRows(activeKey);
+    loadRows(activeKey, { showSpinner: false });
     loadIndex();
   }
 
@@ -199,6 +201,17 @@ function RowEditor({ row, onSave, showEmail, saving }) {
   const [value, setValue] = useState(row.value);
   const [email, setEmail] = useState(row.email || '');
   const [sortOrder, setSortOrder] = useState(row.sort_order);
+
+  // Re-sync local edit state whenever the row prop changes (e.g. after a save
+  // round-trip when the parent re-fetches). Without this, the local state
+  // initialized at mount could fall out of step with the DB, making it look
+  // like an edit reverted when it actually saved fine.
+  useEffect(() => {
+    setValue(row.value);
+    setEmail(row.email || '');
+    setSortOrder(row.sort_order);
+  }, [row.id, row.value, row.email, row.sort_order]);
+
   const dirty = value !== row.value || (email !== (row.email || '')) || sortOrder !== row.sort_order;
 
   function save() {

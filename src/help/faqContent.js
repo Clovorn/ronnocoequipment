@@ -208,12 +208,16 @@ export const FAQ_SECTIONS = [
       { type: 'h3', text: 'Section 5 — Coffee Program & Delivery' },
       { type: 'ul', items: [
         '**Coffee Program** — beverage program type',
-        '**Distribution Method** — required. Pick DSD (direct from Ronnoco) or Indirect (Distributor). Picking Indirect reveals Section 6.',
-        '**How will it be delivered?** — free text',
-        '**Final Delivery Recurrence** — weekly, bi-weekly, etc.',
+        '**Distribution Method** — required. Defaults to **Indirect (Distributor)** since most deals are Indirect; switch to **DSD** if Ronnoco is delivering directly. Picking Indirect reveals Section 6 (Distributor Information).',
         '**Current Coffee Supplier** — who they\'re using today',
-        '**Parts & Service Option** — service tier',
+        '**Service included with Sales and Marketing Agreement** — service terms / notes. The customer will need to sign the Sales and Marketing Agreement.',
       ]},
+      { type: 'p', text: 'Two additional delivery fields appear only when **DSD** is selected (when Ronnoco delivers directly):' },
+      { type: 'ul', items: [
+        '**How will it be delivered?** — free text (e.g. truck, courier)',
+        '**Final Delivery Recurrence** — weekly, bi-weekly, etc.',
+      ]},
+      { type: 'p', text: 'For Indirect deals, the distributor handles delivery, so these fields aren\'t asked here.' },
 
       { type: 'h3', text: 'Section 6 — Distributor Information' },
       { type: 'p', text: 'Only appears for Indirect deals.' },

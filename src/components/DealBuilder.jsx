@@ -60,7 +60,7 @@ function makeBlankDraft(profile, session) {
 
     // Coffee program & delivery
     coffee_program: '',
-    distribution_method: '',
+    distribution_method: 'Indirect (Distributor)', // Most deals are Indirect; rep can switch to DSD
     delivery_method: '',
     delivery_recurrence: '',
     current_coffee_supplier: '',
@@ -144,6 +144,7 @@ export default function DealBuilder({ profile, session, navigate }) {
   const monthlyEstimate = qualifiesForFinance ? dealTotal * LEASE_RATE : null;
 
   const isIndirect       = draft.distribution_method === 'Indirect (Distributor)';
+  const isDSD            = draft.distribution_method === 'DSD';
   const isCoreMark       = draft.parent_distributor === 'Core-Mark';
 
   function validate() {
@@ -442,12 +443,40 @@ export default function DealBuilder({ profile, session, navigate }) {
       <Section number="5" title="Coffee Program & Delivery">
         <FieldGrid cols={2}>
           <LookupSelect label="Coffee Program" listState={coffeeProgramList} value={draft.coffee_program} onChange={(v) => update('coffee_program', v)} placeholder="Select program…" />
-          <LookupSelect label="Distribution Method" required listState={distributionList} value={draft.distribution_method} onChange={(v) => update('distribution_method', v)} placeholder="DSD or Indirect…" />
-          <TextField label="How will it be delivered?" value={draft.delivery_method} onChange={(v) => update('delivery_method', v)} placeholder="e.g. truck, courier" />
-          <TextField label="Final Delivery Recurrence" value={draft.delivery_recurrence} onChange={(v) => update('delivery_recurrence', v)} placeholder="e.g. weekly, bi-weekly" />
+          <LookupSelect
+            label="Distribution Method"
+            required
+            listState={distributionList}
+            value={draft.distribution_method}
+            onChange={(v) => {
+              // When switching to Indirect, the distributor handles delivery —
+              // clear any DSD-only values so stale data isn't submitted.
+              if (v === 'Indirect (Distributor)') {
+                setDraft((p) => ({ ...p, distribution_method: v, delivery_method: '', delivery_recurrence: '' }));
+              } else {
+                update('distribution_method', v);
+              }
+            }}
+            placeholder="DSD or Indirect…"
+          />
           <TextField label="Current Coffee Supplier" value={draft.current_coffee_supplier} onChange={(v) => update('current_coffee_supplier', v)} placeholder="Existing supplier name" />
-          <TextField label="Parts & Service Option" value={draft.parts_service_option} onChange={(v) => update('parts_service_option', v)} placeholder="e.g. covered, T&M" />
+          <TextField
+            label="Service included with Sales and Marketing Agreement"
+            value={draft.parts_service_option}
+            onChange={(v) => update('parts_service_option', v)}
+            placeholder="Service terms / notes"
+            hint="Customer will need to sign the Sales and Marketing Agreement"
+          />
         </FieldGrid>
+
+        {/* DSD-only: Ronnoco is delivering, so the leasing team needs to know how & how often.
+            For Indirect deals these are handled by the distributor and aren't asked here. */}
+        {isDSD && (
+          <FieldGrid cols={2}>
+            <TextField label="How will it be delivered?" value={draft.delivery_method} onChange={(v) => update('delivery_method', v)} placeholder="e.g. truck, courier" />
+            <TextField label="Final Delivery Recurrence" value={draft.delivery_recurrence} onChange={(v) => update('delivery_recurrence', v)} placeholder="e.g. weekly, bi-weekly" />
+          </FieldGrid>
+        )}
       </Section>
 
       {/* ─── Section 6: Distributor — only if Indirect ─── */}
