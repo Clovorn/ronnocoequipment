@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { submitDealToPipeline, logDealActivity, isDealPipelineConfigured } from '../lib/dealPipeline.js';
+import { submitDealToPipeline, logDealActivity, isDealPipelineConfigured, generateQuoteNumber } from '../lib/dealPipeline.js';
 import { LEASE_MIN_PRICE, LEASE_RATE } from '../lib/leasing.js';
 import { useLookupList } from '../lib/useLookupList.js';
 import { US_STATES } from '../lib/usStates.js';
@@ -99,6 +99,13 @@ function makeBlankDraft(profile, session) {
 
     // Notes
     notes: '',
+
+    // Quote-specific (only used when submitting as Quote rather than Deal).
+    // Cover note appears at the top of the customer-facing quote page; valid_until
+    // is the expiration date shown to the customer. Defaults populated when the rep
+    // toggles to quote mode (see submitAsQuote()).
+    quote_cover_note: '',
+    quote_valid_until: '',   // YYYY-MM-DD format for <input type=date>
   };
 }
 
@@ -180,26 +187,17 @@ export default function DealBuilder({ profile, session, navigate }) {
     return null;
   }
 
-  async function submitDeal() {
-    setError(null);
-    const validationError = validate();
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-    if (!isDealPipelineConfigured) {
-      setError('Deal pipeline is not configured. An admin needs to set VITE_DEAL_PIPELINE_URL and VITE_DEAL_PIPELINE_ANON_KEY in Netlify env vars.');
-      return;
-    }
-    setSubmitting(true);
-
-    // Compose the pipeline payload. Maps app field names → pipeline column names.
+  /**
+   * Build the pipeline payload shared by both submitDeal and submitAsQuote.
+   * The two paths set different phase/step/quote fields on top of this base.
+   */
+  function buildBasePayload() {
     const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
     const trimOrNull = (v) => {
       const t = String(v || '').trim();
       return t || null;
     };
-    const pipelinePayload = {
+    return {
       // Customer contact (the "customer" name comes from the primary contact)
       first_name:            trimOrNull(draft.contact_first_name),
       last_name:             trimOrNull(draft.contact_last_name),
@@ -279,19 +277,81 @@ export default function DealBuilder({ profile, session, navigate }) {
 
       notes:                 trimOrNull(draft.notes),
 
-      // Lifecycle
-      current_step:          'submitted',
-      phase:                 'leasing',
-      deal_status:           'active',
-
       // Structured snapshot (preserves equipment + computed totals + raw form state)
       raw_csv: {
-        source: 'ronnoco-catalog-dashboard',
+        source: 'ronnoco-deal-builder',
         equipment_items: equipmentItems,
         total_eq_cost_numeric: dealTotal,
         monthly_lease_estimate: monthlyEstimate,
         qualifies_for_finance: qualifiesForFinance,
       },
+    };
+  }
+
+  /**
+   * Generate a random URL-safe token for the quote's public link. 24 bytes
+   * gives 192 bits of entropy — practically unguessable. We use the browser's
+   * Web Crypto API which is available in every modern browser.
+   */
+  function generateQuoteToken() {
+    const bytes = new Uint8Array(24);
+    crypto.getRandomValues(bytes);
+    // Convert to URL-safe base64 (no +, /, or = chars)
+    return btoa(String.fromCharCode(...bytes))
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=+$/, '');
+  }
+
+  /** Build the absolute URL the customer will click in their email. */
+  function buildQuoteUrl(quoteNumber, token) {
+    const base = window.location.origin;
+    return `${base}/#/quote/${quoteNumber}?t=${token}`;
+  }
+
+  /** Build the mailto: link with subject + body pre-filled. */
+  function buildMailto(customerEmail, customerName, quoteNumber, quoteUrl, validUntil, coverNote) {
+    const repName = [draft.sales_rep_first_name, draft.sales_rep_last_name].filter(Boolean).join(' ').trim() || 'Your Ronnoco rep';
+    const subject = `Your Ronnoco Quote — ${quoteNumber}`;
+    const greeting = customerName ? `Hi ${customerName.split(' ')[0]},` : 'Hi,';
+    const noteBlock = coverNote ? `\n\n${coverNote}\n` : '';
+    const validBlock = validUntil ? `\n\nThis quote is valid through ${validUntil}.` : '';
+    const body =
+`${greeting}
+${noteBlock}
+You can view the full equipment list, deal type, and pricing at the link below:
+
+${quoteUrl}
+${validBlock}
+
+If you have any questions or want to make changes, just reply to this email and I'll get back to you.
+
+Best,
+${repName}`;
+    return `mailto:${encodeURIComponent(customerEmail || '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  }
+
+  async function submitDeal() {
+    setError(null);
+    const validationError = validate();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    if (!isDealPipelineConfigured) {
+      setError('Deal pipeline is not configured. An admin needs to set VITE_DEAL_PIPELINE_URL and VITE_DEAL_PIPELINE_ANON_KEY in Netlify env vars.');
+      return;
+    }
+    setSubmitting(true);
+
+    const pipelinePayload = {
+      ...buildBasePayload(),
+      // Direct-deal lifecycle: skips the sales/quote phase entirely.
+      is_quote:              false,
+      current_step:          'submitted',
+      phase:                 'leasing',
+      deal_status:           'active',
+      customer_decision:     'pending',
     };
 
     const { data: deal, error: pipelineError } = await submitDealToPipeline(pipelinePayload);
@@ -303,16 +363,118 @@ export default function DealBuilder({ profile, session, navigate }) {
     await logDealActivity(
       deal.id,
       'Deal created',
-      `Submitted via Ronnoco Catalog (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
+      `Submitted via Ronnoco Deal Builder (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
       pipelinePayload.sales_rep
     );
 
     setSuccessInfo({
+      kind: 'deal',
       dealId: deal.id,
       customerName: [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' '),
       storeName: draft.store_name,
     });
     setSubmitting(false);
+  }
+
+  /**
+   * Submit-as-quote: same data, different lifecycle (phase=sales, step=quoted).
+   * On success, opens the rep's email client via mailto: with the customer's
+   * email pre-filled and a link to the hosted quote page in the body.
+   */
+  async function submitAsQuote() {
+    setError(null);
+    const validationError = validate();
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    if (!isDealPipelineConfigured) {
+      setError('Deal pipeline is not configured. An admin needs to set VITE_DEAL_PIPELINE_URL and VITE_DEAL_PIPELINE_ANON_KEY in Netlify env vars.');
+      return;
+    }
+    if (!draft.contact_email) {
+      setError('Customer email is required to send a quote (so we can open your email client with it pre-filled).');
+      return;
+    }
+
+    setSubmitting(true);
+
+    // 1) Get the next quote number from the DB (atomic)
+    const { data: quoteNumber, error: numberError } = await generateQuoteNumber();
+    if (numberError || !quoteNumber) {
+      setError(`Could not generate quote number: ${numberError?.message || 'unknown error'}`);
+      setSubmitting(false);
+      return;
+    }
+
+    // 2) Generate a random token for the public URL
+    const quoteToken = generateQuoteToken();
+
+    // 3) Determine valid-until: rep's pick or +30 days from today
+    const validUntil = draft.quote_valid_until || (() => {
+      const d = new Date();
+      d.setDate(d.getDate() + 30);
+      return d.toISOString().slice(0, 10);  // YYYY-MM-DD
+    })();
+
+    const now = new Date().toISOString();
+    const pipelinePayload = {
+      ...buildBasePayload(),
+      // Quote-specific lifecycle: starts in phase=sales, step=quoted
+      is_quote:                true,
+      current_step:            'quoted',
+      phase:                   'sales',
+      deal_status:             'active',
+      customer_decision:       'pending',
+      quote_number:            quoteNumber,
+      quote_token:             quoteToken,
+      quote_cover_note:        draft.quote_cover_note?.trim() || null,
+      quote_valid_until:       validUntil,
+      quote_first_sent_at:     now,
+      quote_last_sent_at:      now,
+      quote_revision:          1,
+    };
+
+    const { data: deal, error: pipelineError } = await submitDealToPipeline(pipelinePayload);
+    if (pipelineError) {
+      setError(`Submission failed: ${pipelineError.message}`);
+      setSubmitting(false);
+      return;
+    }
+    await logDealActivity(
+      deal.id,
+      'Quote created',
+      `${quoteNumber} sent to ${draft.contact_email} (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
+      pipelinePayload.sales_rep
+    );
+
+    const quoteUrl = buildQuoteUrl(quoteNumber, quoteToken);
+    const customerName = [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' ');
+    const mailtoUrl = buildMailto(
+      draft.contact_email,
+      customerName,
+      quoteNumber,
+      quoteUrl,
+      validUntil,
+      draft.quote_cover_note?.trim()
+    );
+
+    setSuccessInfo({
+      kind: 'quote',
+      dealId: deal.id,
+      quoteNumber,
+      quoteUrl,
+      mailtoUrl,
+      customerName,
+      customerEmail: draft.contact_email,
+      storeName: draft.store_name,
+      validUntil,
+    });
+    setSubmitting(false);
+
+    // Auto-open the rep's email client. They can also click the button on the
+    // success screen if their browser blocked the auto-open.
+    window.location.href = mailtoUrl;
   }
 
   function startNewDeal() {
@@ -323,8 +485,85 @@ export default function DealBuilder({ profile, session, navigate }) {
     window.scrollTo(0, 0);
   }
 
-  /* Success screen */
+  /* Success screen — branches based on whether it was a deal or a quote */
   if (successInfo) {
+    if (successInfo.kind === 'quote') {
+      return (
+        <div className="px-4 md:px-6 lg:px-10 py-10 max-w-3xl">
+          <div className="bg-white border border-page-200 rounded-lg shadow-card p-8 md:p-12">
+            <div className="text-center">
+              <div className="w-16 h-16 rounded-full bg-ok/10 text-ok flex items-center justify-center mx-auto mb-4">
+                <svg className="w-8 h-8" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="m5 13 4 4L19 7" />
+                </svg>
+              </div>
+              <h1 className="text-2xl md:text-3xl font-light text-slate-900 mb-2">Quote ready to send</h1>
+              <p className="text-slate-600 leading-relaxed mb-2 max-w-md mx-auto">
+                Quote <span className="font-mono font-medium text-slate-900">{successInfo.quoteNumber}</span> for{' '}
+                <span className="font-medium text-slate-900">{successInfo.storeName}</span>{' '}
+                is saved in the pipeline.
+              </p>
+              <p className="text-sm text-slate-500 mb-6 max-w-md mx-auto">
+                Your email client should have opened with a message to{' '}
+                <span className="font-medium text-slate-700">{successInfo.customerEmail}</span> ready to send.
+                If it didn't, use the buttons below.
+              </p>
+            </div>
+
+            {/* Customer-facing quote URL — visible so rep can copy it manually if needed */}
+            <div className="mb-6 p-4 bg-page-50 border border-page-200 rounded">
+              <div className="flex items-center justify-between gap-3 mb-2">
+                <p className="text-[11px] uppercase tracking-wider font-semibold text-slate-500">
+                  Customer-facing quote link
+                </p>
+                <button
+                  onClick={() => {
+                    navigator.clipboard?.writeText(successInfo.quoteUrl);
+                  }}
+                  className="text-xs text-navy-700 hover:text-navy-900 font-medium"
+                >
+                  Copy
+                </button>
+              </div>
+              <a
+                href={successInfo.quoteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-mono text-navy-700 hover:text-navy-900 break-all underline decoration-navy-300"
+              >
+                {successInfo.quoteUrl}
+              </a>
+              <p className="text-[11px] text-slate-500 mt-2">
+                Valid through {successInfo.validUntil}. The customer can open this any time without signing in.
+              </p>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2 justify-center">
+              <a
+                href={successInfo.mailtoUrl}
+                className="px-5 py-2.5 bg-navy-900 text-chalk-50 rounded font-medium hover:bg-navy-800 transition-colors text-center"
+              >
+                Open email client again
+              </a>
+              <a
+                href={successInfo.quoteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-5 py-2.5 border border-page-200 bg-white rounded text-slate-700 hover:bg-page-50 transition-colors text-center"
+              >
+                Preview quote page
+              </a>
+              <button onClick={startNewDeal}
+                      className="px-5 py-2.5 border border-page-200 bg-white rounded text-slate-700 hover:bg-page-50 transition-colors">
+                Start another
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    // Direct-deal success screen (unchanged from before)
     return (
       <div className="px-4 md:px-6 lg:px-10 py-10 max-w-3xl">
         <div className="bg-white border border-page-200 rounded-lg shadow-card p-8 md:p-12 text-center">
@@ -631,18 +870,67 @@ export default function DealBuilder({ profile, session, navigate }) {
         />
       )}
 
+      {/* ─── Quote-prep panel ─── */}
+      {/* Optional inputs that only matter if the rep is submitting as a quote.
+          We always show them (collapsed by default) so the rep can fill in a
+          cover note or change the valid-until date before clicking Submit as Quote. */}
+      <details className="bg-white border border-page-200 rounded-lg overflow-hidden">
+        <summary className="px-5 py-3 cursor-pointer text-sm font-medium text-slate-700 hover:bg-page-50 transition-colors flex items-center gap-2">
+          <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+          </svg>
+          Quote options
+          <span className="text-xs text-slate-500 font-normal ml-1">— only matters if you submit as a quote</span>
+        </summary>
+        <div className="px-5 pb-5 pt-2 border-t border-page-100">
+          <p className="text-xs text-slate-600 mb-3 leading-relaxed max-w-2xl">
+            A quote is the same deal in the "sales" phase, waiting on the customer's decision.
+            After you click <span className="font-medium text-slate-800">Submit as Quote</span> below,
+            your email client opens with a message to the customer ready to send, including a link
+            to view the quote online.
+          </p>
+          <FieldGrid cols={2}>
+            <TextareaField
+              span={2}
+              label="Cover note to customer (optional)"
+              rows={3}
+              value={draft.quote_cover_note}
+              onChange={(v) => update('quote_cover_note', v)}
+              placeholder="e.g. Following up on our conversation Tuesday — here's the formal quote for the program we discussed."
+            />
+            <TextField
+              label="Quote valid until"
+              type="date"
+              value={draft.quote_valid_until}
+              onChange={(v) => update('quote_valid_until', v)}
+              placeholder=""
+              hint="Defaults to 30 days from today if left blank."
+            />
+          </FieldGrid>
+        </div>
+      </details>
+
       {/* ─── Submit ─── */}
       <div className="bg-white border border-page-200 rounded-lg p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="text-sm text-slate-600 max-w-md">
-          <div className="font-medium text-slate-900 mb-0.5">Ready to submit?</div>
-          This deal will be created in the pipeline at the Submitted stage and the leasing team will be notified.
+          <div className="font-medium text-slate-900 mb-0.5">Ready to send?</div>
+          <span className="text-slate-700">Submit as Quote</span> emails the customer for review.{' '}
+          <span className="text-slate-700">Submit Deal</span> sends it straight to the leasing team.
         </div>
-        <button onClick={submitDeal} disabled={submitting || !isDealPipelineConfigured}
-                className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
-                           hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
-                           transition-colors whitespace-nowrap">
-          {submitting ? 'Submitting…' : 'Submit Deal →'}
-        </button>
+        <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
+          <button onClick={submitAsQuote} disabled={submitting || !isDealPipelineConfigured}
+                  className="px-5 py-3 border-2 border-navy-900 text-navy-900 font-medium rounded
+                             hover:bg-navy-50 disabled:opacity-40 disabled:cursor-not-allowed
+                             transition-colors whitespace-nowrap">
+            {submitting ? '…' : 'Submit as Quote'}
+          </button>
+          <button onClick={submitDeal} disabled={submitting || !isDealPipelineConfigured}
+                  className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
+                             hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
+                             transition-colors whitespace-nowrap">
+            {submitting ? 'Submitting…' : 'Submit Deal →'}
+          </button>
+        </div>
       </div>
 
       {error && (

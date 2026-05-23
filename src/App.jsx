@@ -16,6 +16,7 @@ import LookupListsAdmin from './components/admin/LookupListsAdmin.jsx';
 import DealBuilder from './components/DealBuilder.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import FaqPage from './components/FaqPage.jsx';
+import QuoteView from './components/QuoteView.jsx';
 import RonnocoLogo from './components/RonnocoLogo.jsx';
 
 const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL;
@@ -28,6 +29,14 @@ export default function App() {
 
   const { session, profile, loading, setProfile } = useAuth();
   const { route, navigate } = useRouter();
+
+  // Public route: customer-facing quote view. Renders WITHOUT auth — the customer
+  // arrives via an emailed link and shouldn't be asked to sign in. Access control
+  // is the token in the URL, matched against the deal's quote_token column.
+  // This check must happen BEFORE the auth gate below.
+  if (route.name === 'quote') {
+    return <QuoteView quoteNumber={route.params.quoteNumber} token={route.params.token} />;
+  }
 
   if (loading) {
     return (

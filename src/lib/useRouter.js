@@ -19,7 +19,13 @@ function parseRoute(hash) {
   const stripped = (hash || '').replace(/^#\/?/, '');
   if (!stripped) return { name: 'home', params: {} };
 
-  const parts = stripped.split('/').filter(Boolean);
+  // Pull out any query string within the hash (e.g. "quote/Q-2026-0001?t=abc")
+  // Hash routing means "?" appears inside the hash and isn't a real URL query,
+  // so we parse it ourselves.
+  const [pathOnly, queryStr] = stripped.split('?');
+  const query = new URLSearchParams(queryStr || '');
+
+  const parts = pathOnly.split('/').filter(Boolean);
   const [first, second] = parts;
 
   switch (first) {
@@ -33,6 +39,9 @@ function parseRoute(hash) {
     case 'vendor':     return { name: 'vendor',     params: { slug: second || null } };
     case 'vendors':    return { name: 'vendors',    params: {} }; // full list
     case 'admin':      return { name: 'admin',      params: { section: second || null } };
+    // Public customer-facing quote view — no auth, accessed via emailed link.
+    // URL shape: #/quote/Q-2026-0001?t=<token>
+    case 'quote':      return { name: 'quote',      params: { quoteNumber: second || null, token: query.get('t') } };
     default:           return { name: 'not-found',  params: { path: stripped } };
   }
 }
@@ -52,6 +61,9 @@ export function routeToHash(name, params = {}) {
     case 'vendors':    return '#/vendors';
     case 'vendor':     return `#/vendor/${params.slug || ''}`;
     case 'admin':      return params.section ? `#/admin/${params.section}` : '#/admin';
+    case 'quote':      return params.token
+                              ? `#/quote/${params.quoteNumber}?t=${params.token}`
+                              : `#/quote/${params.quoteNumber || ''}`;
     default:           return '#/home';
   }
 }

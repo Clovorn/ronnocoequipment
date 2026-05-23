@@ -53,6 +53,83 @@ export async function submitDealToPipeline(payload) {
 }
 
 /**
+ * Generate a new quote number via the DB function. Returns `Q-YYYY-NNNN`.
+ * The DB-side function is atomic (insert..on conflict do update returning),
+ * so concurrent calls don't collide.
+ */
+export async function generateQuoteNumber() {
+  if (!dealPipeline) return { data: null, error: { message: 'Deal pipeline not configured.' } };
+  const { data, error } = await dealPipeline.rpc('generate_quote_number');
+  return { data, error };
+}
+
+/**
+ * Fetch a quote for the public customer-facing page. Only returns a record
+ * if both the quote_number AND the token match — this is the access control.
+ * No auth required; anyone with the URL+token can view.
+ *
+ * Returns a *limited* projection — only fields safe to show the customer.
+ * Internal info (cost, ROM, distributor details, internal notes) is omitted.
+ */
+export async function fetchQuoteForCustomer(quoteNumber, token) {
+  if (!dealPipeline) return { data: null, error: { message: 'Deal pipeline not configured.' } };
+  if (!quoteNumber || !token) return { data: null, error: { message: 'Missing quote number or token.' } };
+
+  const { data, error } = await dealPipeline
+    .from('deals')
+    .select(`
+      id, quote_number, quote_revision, quote_cover_note, quote_valid_until,
+      quote_first_sent_at, quote_last_sent_at,
+      first_name, last_name, contact_name, contact_email,
+      store_name, address, city, state, zip_code,
+      sales_rep, sales_rep_email,
+      deal_type, equipment_selection, total_eq_cost,
+      target_install_date,
+      raw_csv,
+      deal_status, customer_decision,
+      created_at, updated_at
+    `)
+    .eq('quote_number', quoteNumber)
+    .eq('quote_token', token)
+    .eq('is_quote', true)
+    .maybeSingle();
+
+  return { data, error };
+}
+
+/**
+ * Best-effort "the customer opened the quote" tracker. Called from the public
+ * quote page when it loads. Updates quote_first_viewed_at if null, and always
+ * bumps quote_last_viewed_at. Failures are swallowed — viewing should never
+ * be blocked by tracking.
+ */
+export async function recordQuoteView(quoteNumber, token) {
+  if (!dealPipeline || !quoteNumber || !token) return;
+  try {
+    const now = new Date().toISOString();
+    // Update last_viewed_at always; set first_viewed_at only if null.
+    await dealPipeline
+      .from('deals')
+      .update({
+        quote_last_viewed_at: now,
+        quote_first_viewed_at: now,  // ignored if first_viewed_at is already set; see below
+      })
+      .eq('quote_number', quoteNumber)
+      .eq('quote_token', token)
+      .is('quote_first_viewed_at', null);
+
+    // Always bump last_viewed_at regardless of first_viewed status
+    await dealPipeline
+      .from('deals')
+      .update({ quote_last_viewed_at: now })
+      .eq('quote_number', quoteNumber)
+      .eq('quote_token', token);
+  } catch (err) {
+    console.warn('Quote view tracking failed (non-fatal):', err);
+  }
+}
+
+/**
  * Log an activity row for a freshly-inserted deal. Best-effort — if it fails,
  * we don't block the deal submission (the deal exists in the pipeline either way).
  */

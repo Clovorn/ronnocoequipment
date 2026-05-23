@@ -40,13 +40,14 @@ export const FAQ_SECTIONS = [
       { type: 'p', text: 'Welcome to the Ronnoco Deal Builder. This is the application your sales team uses to find equipment, build distributor bundles, and submit new deals to the leasing team.' },
 
       { type: 'h3', text: "What you'll see when you log in" },
-      { type: 'p', text: 'The top of every page has a navigation bar with five sections:' },
+      { type: 'p', text: 'The top of every page has a navigation bar with six sections:' },
       { type: 'ul', items: [
         '**Home** — recent announcements, featured vendors, and quick links',
         '**Catalog** — the full searchable list of all equipment',
         '**Bundles** — pre-built distributor program packages',
         '**Favorites** — items you\'ve starred for quick access',
-        '**+ New Deal** — opens the deal sheet to start a new customer deal',
+        '**FAQ** — these help docs',
+        '**+ New Deal** — opens the deal sheet. From there you can either send a quote to the customer for review or submit the deal straight to leasing.',
       ]},
       { type: 'p', text: 'On the far right is your user menu (your name and an avatar with your initials). Click it to access your profile, change your password, sign out, or — if you\'re an admin — get to the admin section.' },
 
@@ -61,7 +62,7 @@ export const FAQ_SECTIONS = [
         'Change your password from the temporary one to something only you know',
         'Update your display name if it doesn\'t look right',
       ]},
-      { type: 'p', text: 'After that, you\'re set. Browse the catalog, look at the distributor bundles, and the next time you have a customer ready, build them a deal sheet.' },
+      { type: 'p', text: 'After that, you\'re set. Browse the catalog, look at the distributor bundles, and the next time you have a customer ready, send them a quote or build them a full deal sheet.' },
     ],
   },
 
@@ -258,9 +259,14 @@ export const FAQ_SECTIONS = [
       { type: 'h3', text: 'Section 11 — Additional Notes' },
       { type: 'p', text: 'Free-text field for anything that doesn\'t fit elsewhere.' },
 
-      { type: 'h3', text: 'Submitting the deal' },
-      { type: 'p', text: 'Scroll to the bottom and click **Submit Deal →**. The form validates first; if anything required is missing, you\'ll see a red error message. Fill it in and try again.' },
-      { type: 'p', text: 'On success, you\'ll see a confirmation screen with the new Deal ID. The deal is now in the Deal Pipeline at the Submitted stage. From here, further changes happen in the Deal Pipeline dashboard, not in Deal Builder.' },
+      { type: 'h3', text: 'Submitting the deal — quote or deal?' },
+      { type: 'p', text: 'At the bottom of the form, you\'ll see **two** submit buttons:' },
+      { type: 'ul', items: [
+        '**Submit as Quote** — saves the record in the pipeline at the "sales" phase and opens your email client with a customer-facing quote link ready to send. Use this when the customer hasn\'t fully committed yet.',
+        '**Submit Deal →** — sends the deal straight to the leasing team. Use this when the customer has already agreed and you\'re ready to start paperwork.',
+      ]},
+      { type: 'p', text: 'The form validates first; if anything required is missing, you\'ll see a red error message. Fill it in and try again.' },
+      { type: 'p', text: 'On success: for a deal, you\'ll see a confirmation screen with the Deal ID. For a quote, you\'ll see the quote number and a link you can copy. See [Sending quotes to customers](#sending-quotes) for the full quote workflow.' },
     ],
   },
 
@@ -391,8 +397,72 @@ export const FAQ_SECTIONS = [
 
   // ────────────────────────────────────────────────────────────────────────
   {
-    id: 'after-submit',
+    id: 'sending-quotes',
     number: 7,
+    title: 'Sending quotes to customers',
+    starred: true,
+    summary: 'When and how to send a quote vs. a direct deal, what the customer sees, and what happens after.',
+    blocks: [
+      { type: 'callout', tone: 'info', text: 'A **quote** is the same deal sheet, sent to the customer for review before committing. It lives in the pipeline at the "sales" phase and turns into a regular deal once the customer accepts.' },
+
+      { type: 'h3', text: 'When to send a quote vs. a direct deal' },
+      { type: 'p', text: 'Two paths from the deal sheet:' },
+      { type: 'ul', items: [
+        '**Submit as Quote** — for customers who are still deciding. Sends them a clean, branded page they can review, share with a partner, and reply to.',
+        '**Submit Deal** — for customers who\'ve already agreed and you\'re ready to start paperwork. Skips the sales phase and goes straight to the leasing team.',
+      ]},
+      { type: 'p', text: 'When in doubt, **Submit as Quote**. The customer gets a record they can refer back to, you get a tracked sales-phase deal in the pipeline, and converting it to a deal later is a one-click action.' },
+
+      { type: 'h3', text: 'How to send a quote' },
+      { type: 'ol', items: [
+        'Fill out the deal sheet as normal (all the same required fields apply)',
+        'Make sure the **customer email** in Section 4 is correct — that\'s where the quote will be sent',
+        'Optional: expand the **Quote options** panel above the submit buttons and add a cover note ("Hi Sarah, following up on our Tuesday conversation…") and/or a custom valid-until date',
+        'Click **Submit as Quote**',
+        'Your email client opens with a message ready to send. Review the email, edit anything you want, then click Send in your email client',
+      ]},
+      { type: 'p', text: 'The quote is saved in the pipeline with a quote number like **Q-2026-0042**. The customer-facing link is also shown on the success screen — you can copy it if you need to share it through another channel (text, Slack, in person).' },
+
+      { type: 'h3', text: 'What the customer sees' },
+      { type: 'p', text: 'When the customer clicks the link in your email, they see a clean Ronnoco-branded page with:' },
+      { type: 'ul', items: [
+        'Their store name and your cover note',
+        'The complete equipment list with quantities and list prices',
+        'The deal type (Lease, Finance, Purchase, or Loan) and pricing summary',
+        'For lease deals: the estimated monthly amount with a brief explanation',
+        'Your name and email so they can reply to you directly',
+        'The validity date and standard disclaimers',
+      ]},
+      { type: 'p', text: 'They do **not** see internal data: cost, ROM info, distributor details, internal notes, or anything else that shouldn\'t leave the company. The customer page is read-only.' },
+
+      { type: 'h3', text: 'After the customer responds' },
+      { type: 'p', text: 'The customer replies (typically by email) with their decision. You then record what they chose in the **Sales tab** of the Pipeline dashboard, and the deal advances:' },
+      { type: 'ul', items: [
+        'Customer wants to **lease** or **finance** → the deal moves to the **leasing** phase, leasing team takes over',
+        'Customer wants to **purchase** outright or accept a **loan placement** → the deal moves to the **operations** phase for order processing',
+        'Customer **declined** → the deal is marked lost and closed',
+      ]},
+      { type: 'callout', tone: 'tip', text: 'The Sales-tab interface in the Pipeline dashboard is built in a separate phase of this rollout. Until it ships, ask the leasing or ops team to advance accepted quotes manually.' },
+
+      { type: 'h3', text: 'Editing a quote after it\'s sent' },
+      { type: 'p', text: 'Customer wants to change something? Add an item, adjust quantities, change the deal type? Edit the deal from the Pipeline dashboard\'s Sales tab. Each edit is logged in the deal\'s revision history, so there\'s an audit trail of what changed and when.' },
+      { type: 'p', text: 'After editing, you can re-send the updated quote. The same customer-facing link works — when the customer reopens it, they see the latest version automatically.' },
+
+      { type: 'h3', text: 'Quote numbers' },
+      { type: 'p', text: 'Every quote gets a unique year-prefixed number: **Q-2026-0001**, **Q-2026-0002**, etc. The numbering resets on January 1. Customers can mention the number back to you ("about Q-2026-0042…") for easy reference.' },
+
+      { type: 'h3', text: 'Quote validity' },
+      { type: 'p', text: 'Every quote shows a "valid until" date. Default is 30 days from when you sent it; you can override it from the Quote options panel before submitting. After the validity date, the quote should be re-issued — list prices may have changed, equipment availability shifts, etc.' },
+
+      { type: 'h3', text: 'Privacy of the quote link' },
+      { type: 'p', text: 'Quote links contain a long random token, making them practically unguessable. Anyone with the link can view the quote — there\'s no password — so treat the link the way you\'d treat a draft quote. Don\'t post it publicly. If a link needs to be invalidated for any reason, ask an admin.' },
+    ],
+  },
+
+  // ────────────────────────────────────────────────────────────────────────
+  {
+    id: 'after-submit',
+    number: 8,
     title: 'What happens after you submit',
     summary: 'How a submitted deal flows into the Deal Pipeline and what the leasing team does next.',
     blocks: [
@@ -447,7 +517,7 @@ export const FAQ_SECTIONS = [
   // ────────────────────────────────────────────────────────────────────────
   {
     id: 'profile-and-account',
-    number: 8,
+    number: 9,
     title: 'Profile and account',
     summary: 'Changing your name, your password, and understanding roles.',
     blocks: [
@@ -501,7 +571,7 @@ export const FAQ_SECTIONS = [
   // ────────────────────────────────────────────────────────────────────────
   {
     id: 'troubleshooting',
-    number: 9,
+    number: 10,
     title: 'Troubleshooting',
     summary: 'Common issues and what to do about them.',
     blocks: [
@@ -551,6 +621,12 @@ export const FAQ_SECTIONS = [
 
       { type: 'h3', text: "I can't see the Admin section" },
       { type: 'p', text: 'The Admin item only appears for admin/director roles in the user menu dropdown. If you should be admin but don\'t see it, contact an existing admin.' },
+
+      { type: 'h3', text: 'I clicked Submit as Quote but no email opened' },
+      { type: 'p', text: 'Your browser may have blocked the mailto: action. The quote still saved — check the success screen for the customer-facing link and the "Open email client again" button. You can also copy the quote URL and paste it into a fresh email.' },
+
+      { type: 'h3', text: 'The customer says "this link doesn\'t work"' },
+      { type: 'p', text: 'Most common causes: (1) the email client mangled the URL — ask them to copy-paste the whole link rather than clicking, (2) the link is missing the `?t=...` token at the end (also from email mangling). Worst case, log in to the Pipeline dashboard, find the quote, copy the link from there, and re-send.' },
 
       { type: 'h3', text: 'Something else?' },
       { type: 'p', text: 'Screenshot what you\'re seeing (with any error and URL bar visible) and send to your admin. Include: what you were trying to do, what you expected, what actually happened, the version stamp from your user menu, and your browser + device type.' },
