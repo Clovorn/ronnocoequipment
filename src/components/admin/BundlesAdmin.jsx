@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '../../lib/supabase.js';
 import EquipmentPicker from '../EquipmentPicker.jsx';
+import { calculateBundlePricing, formatCurrency, formatMonthly, formatSoftCost } from '../../lib/bundleMath.js';
 
 const PRICING_OPTIONS = [
   { value: 'both',           label: 'Both (lease and purchase)' },
@@ -134,11 +135,26 @@ function BundleEditor({ bundle, userId, onClose, onSaved, onDeleted }) {
     isNew
       ? {
           name: '', description: '', long_description: '', image_url: '',
-          pricing_type: 'both',
+          pricing_type: 'lease_only',
           list_price: '', monthly_lease_price: '', lease_term_months: 60,
           category: '', sort_order: 10, active: true, featured: false,
+          // Distributor-bundle pricing model (v26)
+          target_monthly_fee: '',
+          soft_cost_pct: 0.25,
+          service_reserve: 1080.00,
+          term_months: 36,
+          lease_rate: 0.0395,
         }
-      : { ...bundle, list_price: bundle.list_price ?? '', monthly_lease_price: bundle.monthly_lease_price ?? '' }
+      : {
+          ...bundle,
+          list_price:          bundle.list_price ?? '',
+          monthly_lease_price: bundle.monthly_lease_price ?? '',
+          target_monthly_fee:  bundle.target_monthly_fee ?? '',
+          soft_cost_pct:       bundle.soft_cost_pct ?? 0.25,
+          service_reserve:     bundle.service_reserve ?? 1080.00,
+          term_months:         bundle.term_months ?? 36,
+          lease_rate:          bundle.lease_rate ?? 0.0395,
+        }
   );
   const [items, setItems] = useState([]);
   const [loadingItems, setLoadingItems] = useState(!isNew);
@@ -209,12 +225,19 @@ function BundleEditor({ bundle, userId, onClose, onSaved, onDeleted }) {
 
     // Coerce numeric/empty fields
     const payload = { ...draft };
-    ['list_price', 'monthly_lease_price'].forEach((k) => {
+    ['list_price', 'monthly_lease_price', 'target_monthly_fee', 'service_reserve'].forEach((k) => {
       payload[k] = payload[k] === '' || payload[k] == null ? null : parseFloat(payload[k]);
     });
     payload.lease_term_months = payload.lease_term_months ? parseInt(payload.lease_term_months, 10) : null;
+    payload.term_months = payload.term_months ? parseInt(payload.term_months, 10) : 36;
+    payload.soft_cost_pct = payload.soft_cost_pct == null ? 0.25 : parseFloat(payload.soft_cost_pct);
+    payload.lease_rate    = payload.lease_rate == null ? 0.0395 : parseFloat(payload.lease_rate);
     delete payload._new;
     ['created_at', 'updated_at', 'created_by'].forEach((k) => delete payload[k]);
+
+    // The view v_bundles_with_totals returns derived columns. Strip them so
+    // they don't get included in the bundles INSERT/UPDATE.
+    ['included_items_count', 'optional_items_count', 'included_items_total'].forEach((k) => delete payload[k]);
 
     let bundleId = bundle.id;
     if (isNew) {
@@ -369,19 +392,103 @@ function BundleEditor({ bundle, userId, onClose, onSaved, onDeleted }) {
             </div>
           </section>
 
-          {/* Pricing */}
+          {/* Pricing — Distributor Bundle Model (v26) */}
           <section className="space-y-3">
-            <h3 className="text-xs uppercase tracking-[0.2em] text-slate-500 font-medium">Pricing</h3>
-            <Select label="Pricing type" value={draft.pricing_type}
-                    onChange={(v) => update('pricing_type', v)} options={PRICING_OPTIONS} />
+            <h3 className="text-xs uppercase tracking-[0.2em] text-slate-500 font-medium">
+              Distributor Bundle Pricing
+            </h3>
+            <p className="text-[11px] text-slate-500 leading-relaxed -mt-1">
+              The customer's monthly fee is <strong>computed</strong> from the equipment list,
+              soft-cost percentage, and service reserve. The marketed "Starts at" number is
+              displayed on bundle cards but the actual quote uses the computed math.
+            </p>
+
             <div className="grid grid-cols-2 gap-3">
-              <Input label="List price ($)" type="number"
-                     value={draft.list_price ?? ''} onChange={(v) => update('list_price', v)} />
-              <Input label="Monthly lease ($)" type="number"
-                     value={draft.monthly_lease_price ?? ''} onChange={(v) => update('monthly_lease_price', v)} />
+              <Input
+                label="Marketed starting fee ($)"
+                hint='Shown on cards as "Starts at $X/mo". Display only.'
+                type="number"
+                value={draft.target_monthly_fee ?? ''}
+                onChange={(v) => update('target_monthly_fee', v)}
+              />
+              <Input
+                label="Lease term (months)"
+                type="number"
+                value={draft.term_months ?? 36}
+                onChange={(v) => update('term_months', v)}
+              />
             </div>
-            <Input label="Lease term (months)" type="number"
-                   value={draft.lease_term_months ?? ''} onChange={(v) => update('lease_term_months', v)} />
+
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                label="Soft cost (%)"
+                hint="Multiplier on hardware total. 20–25%."
+                type="number"
+                value={
+                  draft.soft_cost_pct == null
+                    ? ''
+                    : (parseFloat(draft.soft_cost_pct) * 100).toFixed(0)
+                }
+                onChange={(v) => {
+                  const pct = parseFloat(v);
+                  update('soft_cost_pct', Number.isFinite(pct) ? pct / 100 : 0.25);
+                }}
+              />
+              <Input
+                label="Service & media reserve ($)"
+                hint="Added to lease basis. Hidden from customer."
+                type="number"
+                value={draft.service_reserve ?? 1080}
+                onChange={(v) => update('service_reserve', v)}
+              />
+            </div>
+
+            <details className="text-xs text-slate-600">
+              <summary className="cursor-pointer text-slate-500 hover:text-slate-700 select-none">
+                Advanced
+              </summary>
+              <div className="mt-2 grid grid-cols-2 gap-3">
+                <Input
+                  label="Lease rate (multiplier)"
+                  hint="× lease basis = monthly. Default 0.0395."
+                  type="number"
+                  value={draft.lease_rate ?? 0.0395}
+                  onChange={(v) => update('lease_rate', v)}
+                />
+              </div>
+            </details>
+
+            {/* Live preview */}
+            <BundlePricingPreview bundle={draft} items={items} />
+          </section>
+
+          {/* Legacy pricing fields — bundle has these for backward compat
+              but distributor bundles use the computed model above. Hidden
+              behind a disclosure so admins managing non-distributor bundles
+              (if any exist) can still edit them. */}
+          <section className="space-y-3">
+            <details className="text-xs text-slate-600">
+              <summary className="cursor-pointer text-slate-500 hover:text-slate-700 select-none font-medium uppercase tracking-wider">
+                Legacy pricing fields
+              </summary>
+              <div className="mt-3 space-y-3">
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  These fields are kept for backward compatibility. New distributor-bundle deals
+                  use the computed pricing above. Edit only if you have non-distributor bundles
+                  that still rely on the older manual pricing.
+                </p>
+                <Select label="Pricing type" value={draft.pricing_type}
+                        onChange={(v) => update('pricing_type', v)} options={PRICING_OPTIONS} />
+                <div className="grid grid-cols-2 gap-3">
+                  <Input label="List price ($)" type="number"
+                         value={draft.list_price ?? ''} onChange={(v) => update('list_price', v)} />
+                  <Input label="Legacy monthly lease ($)" type="number"
+                         value={draft.monthly_lease_price ?? ''} onChange={(v) => update('monthly_lease_price', v)} />
+                </div>
+                <Input label="Legacy lease term (months)" type="number"
+                       value={draft.lease_term_months ?? ''} onChange={(v) => update('lease_term_months', v)} />
+              </div>
+            </details>
           </section>
 
           {/* Display */}
@@ -510,6 +617,115 @@ function BundleItemEditor({ item, onChange, onRemove }) {
                  className="w-full px-2 py-1.5 bg-white border border-page-200 rounded text-sm font-mono" />
         </label>
       </div>
+    </div>
+  );
+}
+
+
+// ─── BundlePricingPreview (v26) ────────────────────────────────────────────
+// Renders the computed pricing breakdown for the bundle being edited, given
+// the current equipment items. Lives inside the admin form so the admin sees
+// how their soft_cost / reserve / equipment choices land on the customer's
+// monthly. This is the same calculation the rep will see in Increment B.
+function BundlePricingPreview({ bundle, items }) {
+  const equipment = useMemo(() => {
+    return (items || []).map((it) => ({
+      list_price: it.override_price != null && it.override_price !== ''
+        ? parseFloat(it.override_price)
+        : (it.equipment?.list_price ?? 0),
+      quantity: it.quantity || 1,
+    }));
+  }, [items]);
+
+  const pricing = useMemo(
+    () => calculateBundlePricing({ bundle, equipment }),
+    [bundle, equipment]
+  );
+
+  const target = bundle?.target_monthly_fee != null && bundle?.target_monthly_fee !== ''
+    ? parseFloat(bundle.target_monthly_fee)
+    : null;
+
+  return (
+    <div className="bg-page-50 border border-page-200 rounded-lg p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h4 className="text-xs uppercase tracking-wider text-slate-700 font-medium">
+          Computed pricing
+        </h4>
+        {pricing.eligible ? (
+          <span className="text-[10px] uppercase tracking-wider font-bold text-ok bg-ok/10 px-2 py-0.5 rounded">
+            ✓ Qualifies for lease
+          </span>
+        ) : (
+          <span className="text-[10px] uppercase tracking-wider font-bold text-bad bg-red-50 px-2 py-0.5 rounded">
+            ✗ Below $5,000
+          </span>
+        )}
+      </div>
+
+      <div className="space-y-1.5 text-sm font-mono tabular-nums">
+        <PreviewRow label="Hardware total" value={formatCurrency(pricing.hardware)} />
+        <PreviewRow
+          label={`Soft cost (${formatSoftCost(pricing.softCostPct)})`}
+          value={formatCurrency(pricing.softCost)}
+        />
+        <PreviewRow
+          label="Service & media reserve"
+          value={formatCurrency(pricing.reserve)}
+          muted
+        />
+        <div className="border-t border-page-200 my-1.5" />
+        <PreviewRow
+          label="Lease basis"
+          value={formatCurrency(pricing.leaseBasis)}
+          bold
+        />
+        <PreviewRow
+          label={`Monthly raw (× ${pricing.leaseRate})`}
+          value={formatCurrency(pricing.monthlyRaw)}
+          muted
+        />
+        <PreviewRow
+          label="Customer monthly (rounded)"
+          value={formatMonthly(pricing.monthlyCharged)}
+          bold
+          highlight
+        />
+      </div>
+
+      {target != null && Number.isFinite(target) && (
+        <p className="mt-3 text-[11px] text-slate-500 leading-relaxed">
+          Marketed starting fee: <span className="font-mono">{formatMonthly(target)}/mo</span>.{' '}
+          Computed monthly:{' '}
+          <span className="font-mono font-medium text-slate-700">
+            {formatMonthly(pricing.monthlyCharged)}/mo
+          </span>
+          {target !== pricing.monthlyCharged && (
+            <>
+              {' '}({pricing.monthlyCharged > target ? '+' : '−'}
+              ${Math.abs(pricing.monthlyCharged - target).toLocaleString()} from tier)
+            </>
+          )}
+        </p>
+      )}
+
+      {!pricing.eligible && pricing.eligibilityShortfall > 0 && (
+        <p className="mt-3 text-[11px] text-bad leading-relaxed">
+          Add ~{formatCurrency(pricing.eligibilityShortfall / (1 + pricing.softCostPct))} more
+          in hardware to clear the $5,000 lease floor.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function PreviewRow({ label, value, bold, muted, highlight }) {
+  return (
+    <div className={`flex items-center justify-between ${highlight ? 'bg-navy-50 -mx-2 px-2 py-1 rounded' : ''}`}>
+      <span className={`${muted ? 'text-slate-500' : 'text-slate-700'} text-xs`}>{label}</span>
+      <span className={`${bold ? 'font-semibold text-slate-900' : muted ? 'text-slate-500' : 'text-slate-700'}`}>
+        {value}
+      </span>
     </div>
   );
 }

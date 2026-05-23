@@ -20,6 +20,7 @@ const PUBLIC_FIELDS = [
   { key: 'finance_eligible', label: 'Finance eligible', type: 'boolean' },
   { key: 'lease_eligible', label: 'Lease eligible (admin override)', type: 'boolean' },
   { key: 'loan_eligible', label: 'Loan eligible', type: 'boolean' },
+  { key: 'bundle_eligible', label: 'Available for distributor bundles', type: 'boolean' },
   { key: 'active', label: 'Active', type: 'boolean' },
 ];
 
