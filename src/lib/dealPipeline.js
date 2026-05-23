@@ -130,6 +130,52 @@ export async function recordQuoteView(quoteNumber, token) {
 }
 
 /**
+ * Fetch every deal in the pipeline submitted by this rep (by email match).
+ *
+ * Why email and not user_id: the pipeline DB doesn't know about catalog auth
+ * users — submissions are written via the anon key with `sales_rep_email`
+ * stamped from the rep's session at submit time. So email is the only link
+ * back to the current user.
+ *
+ * Returns BOTH quotes (is_quote=true, phase='sales') AND direct-submit deals
+ * (is_quote=false, phase='leasing' or beyond). The workspace UI is responsible
+ * for filtering / grouping them visually.
+ *
+ * Projection is the columns the workspace actually displays — keeping this
+ * narrow avoids dragging the full deal record (which has tons of internal-only
+ * fields) over the wire on every workspace load.
+ */
+export async function fetchMyDeals(email) {
+  if (!dealPipeline) {
+    return { data: [], error: { message: 'Deal pipeline not configured.' } };
+  }
+  if (!email) {
+    // No email = no scope. Empty result is safer than dumping all deals.
+    return { data: [], error: null };
+  }
+
+  const { data, error } = await dealPipeline
+    .from('deals')
+    .select(`
+      id,
+      is_quote, quote_number, quote_token, quote_valid_until,
+      quote_first_sent_at, quote_last_sent_at,
+      quote_first_viewed_at, quote_last_viewed_at,
+      customer_decision, customer_decision_at,
+      current_step, phase, deal_status,
+      first_name, last_name, contact_name, contact_email,
+      store_name, city, state,
+      deal_type, total_eq_cost,
+      sales_rep, sales_rep_email,
+      created_at, updated_at
+    `)
+    .eq('sales_rep_email', email)
+    .order('created_at', { ascending: false });
+
+  return { data: data || [], error };
+}
+
+/**
  * Log an activity row for a freshly-inserted deal. Best-effort — if it fails,
  * we don't block the deal submission (the deal exists in the pipeline either way).
  */

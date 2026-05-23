@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
 import { submitDealToPipeline, logDealActivity, isDealPipelineConfigured, generateQuoteNumber } from '../lib/dealPipeline.js';
+import { fetchDraft, insertDraft, updateDraft, deleteDraft, defaultDraftName } from '../lib/draftStorage.js';
 import { LEASE_MIN_PRICE, LEASE_RATE } from '../lib/leasing.js';
 import { useLookupList } from '../lib/useLookupList.js';
-import { useFieldRequirements, validateAgainstRequirements } from '../lib/useFieldRequirements.js';
+import { useFieldRequirements, validateAgainstRequirements, fieldMetaFor } from '../lib/useFieldRequirements.js';
 import { US_STATES } from '../lib/usStates.js';
 import EquipmentPicker from './EquipmentPicker.jsx';
 
@@ -112,13 +113,103 @@ function makeBlankDraft(profile, session) {
 
 /* ───────────────────────── Main component ───────────────────────── */
 
-export default function DealBuilder({ profile, session, navigate }) {
+export default function DealBuilder({ profile, session, navigate, draftId = null }) {
   const [draft, setDraft] = useState(() => makeBlankDraft(profile, session));
   const [equipmentItems, setEquipmentItems] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState(null);
   const [successInfo, setSuccessInfo] = useState(null);
+
+  /**
+   * submitMode — which lifecycle the rep is currently building toward.
+   *
+   * Default 'quote' because that's the more common path (rep meets prospect →
+   * sends quote → customer decides → either lease or finance flows back into a
+   * full deal). Direct-to-deal is the exception for known accounts that have
+   * already verbally agreed.
+   *
+   * This drives BOTH validation (which fields are required) and rendering
+   * (which sections are even shown). Switching modes never destroys data —
+   * deal-only field values are preserved in draft and reappear if the rep
+   * switches back, so a half-filled deal sheet doesn't get truncated when
+   * the rep changes their mind.
+   */
+  const [submitMode, setSubmitMode] = useState('quote');
+
+  /* ───── Draft persistence state ─────
+   * currentDraftId  — uuid of the deal_drafts row this form represents, or
+   *                   null if the rep has never saved (i.e. nothing in the DB
+   *                   yet). On a successful submit we delete this row.
+   * draftStatus     — drives the small status indicator next to the Save
+   *                   Draft button. 'idle' | 'saving' | 'saved' | 'error'.
+   * hydrating       — true while we're fetching an existing draft from URL.
+   *                   Used to show a loading placeholder instead of the blank
+   *                   form (otherwise the rep sees an empty form for ~300ms
+   *                   then it suddenly fills in — feels broken).
+   * hydrationError  — non-null if the requested draft id couldn't be loaded
+   *                   (deleted, wrong user, transient DB error). Surfaced as
+   *                   an inline notice; the rep can still use the blank form.
+   */
+  const [currentDraftId, setCurrentDraftId] = useState(draftId);
+  const [draftStatus, setDraftStatus] = useState('idle');   // 'idle' | 'saving' | 'saved' | 'error'
+  const [hydrating, setHydrating] = useState(Boolean(draftId));
+  const [hydrationError, setHydrationError] = useState(null);
+
+  /**
+   * Hydrate an existing draft when the page mounts with ?draft=<uuid> in the
+   * URL. The draft row stores the entire `draft` object and `equipmentItems`
+   * array — we drop them straight into state and the form re-renders with
+   * everything restored exactly as the rep left it.
+   *
+   * RLS scopes the SELECT to user_id = auth.uid(), so a rep can't load a
+   * draft they don't own — the DB just returns null and we fall through to
+   * a friendly "draft not found" notice. The blank form still works.
+   */
+  useEffect(() => {
+    if (!draftId) {
+      setHydrating(false);
+      return;
+    }
+    let cancelled = false;
+    setHydrating(true);
+    setHydrationError(null);
+
+    fetchDraft(draftId)
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setHydrationError(`Could not load draft: ${error.message}`);
+          setHydrating(false);
+          return;
+        }
+        if (!data) {
+          // No row — the draft was deleted or belongs to someone else (RLS
+          // hides it). Clear the URL param so refreshing doesn't keep trying.
+          setHydrationError('That draft no longer exists. Starting fresh.');
+          setCurrentDraftId(null);
+          setHydrating(false);
+          return;
+        }
+        // Merge over a blank draft so newly-added schema fields (added since
+        // the draft was saved) get their defaults rather than ending up
+        // undefined and tripping controlled-input warnings.
+        const blank = makeBlankDraft(profile, session);
+        setDraft({ ...blank, ...(data.draft_state || {}) });
+        setEquipmentItems(Array.isArray(data.equipment_items) ? data.equipment_items : []);
+        setSubmitMode(data.submit_mode === 'deal' ? 'deal' : 'quote');
+        setCurrentDraftId(data.id);
+        setHydrating(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setHydrationError(`Could not load draft: ${err.message}`);
+        setHydrating(false);
+      });
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draftId]);
 
   // Lookup lists
   const distributorList     = useLookupList('parent_distributor');
@@ -132,6 +223,22 @@ export default function DealBuilder({ profile, session, navigate }) {
 
   // Field requirements config (admin-managed: Apply to Quote / Deal / Both / Optional)
   const { rules: fieldRules } = useFieldRequirements();
+
+  /**
+   * meta(fieldKey) → { visible, required, isOptional, knownToRules }
+   *
+   * Memoized closure around fieldMetaFor so JSX can ask
+   *   meta('legal_business_name').required
+   * without re-passing the same four args at every call site.
+   *
+   * Dependencies: rules (changes only on cache invalidation), submitMode
+   * (the pivot), and draft (so conditional predicates like
+   * change_of_ownership re-evaluate when the parent toggle flips).
+   */
+  const meta = useMemo(
+    () => (fieldKey) => fieldMetaFor(fieldRules, fieldKey, submitMode, draft),
+    [fieldRules, submitMode, draft]
+  );
 
   // Auto-populate ROM email when a ROM person is selected (if email is on file)
   useEffect(() => {
@@ -147,7 +254,18 @@ export default function DealBuilder({ profile, session, navigate }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draft.rom_person, romPersonList.options]);
 
-  const update = (key, value) => setDraft((prev) => ({ ...prev, [key]: value }));
+  // Field updates mark the draft as dirty so the "Saved" indicator goes back
+  // to idle. We don't auto-save (per v22b spec, explicit Save Draft button),
+  // but the indicator should reflect reality — a "Saved" badge sitting next
+  // to a freshly edited field would be misleading.
+  const update = (key, value) => {
+    setDraft((prev) => ({ ...prev, [key]: value }));
+    setDraftStatus((s) => (s === 'saved' ? 'idle' : s));
+  };
+
+  // Equipment mutations bypass update() (they edit equipmentItems, not draft),
+  // so call this explicitly from each equipment change site.
+  const markDraftDirty = () => setDraftStatus((s) => (s === 'saved' ? 'idle' : s));
 
   const eqSummary = useMemo(() => summarizeEquipment(equipmentItems), [equipmentItems]);
   const dealTotal = eqSummary.total;
@@ -386,6 +504,14 @@ ${repName}`;
       pipelinePayload.sales_rep
     );
 
+    // Draft → done. Best-effort delete: if it fails, the deal still exists
+    // in the pipeline so the rep's primary action succeeded. The orphan draft
+    // can be cleaned up from the workspace.
+    if (currentDraftId) {
+      try { await deleteDraft(currentDraftId); }
+      catch (err) { console.warn('Could not delete draft after submit:', err); }
+    }
+
     setSuccessInfo({
       kind: 'deal',
       dealId: deal.id,
@@ -463,6 +589,13 @@ ${repName}`;
       pipelinePayload.sales_rep
     );
 
+    // Same as direct-deal: draft → quote means the draft has served its
+    // purpose. Best-effort delete; if it fails the rep can clean up later.
+    if (currentDraftId) {
+      try { await deleteDraft(currentDraftId); }
+      catch (err) { console.warn('Could not delete draft after submit:', err); }
+    }
+
     const quoteUrl = buildQuoteUrl(quoteNumber, quoteToken);
     const customerName = [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' ');
     const mailtoUrl = buildMailto(
@@ -497,7 +630,133 @@ ${repName}`;
     setEquipmentItems([]);
     setSuccessInfo(null);
     setError(null);
+    setCurrentDraftId(null);
+    setDraftStatus('idle');
+    // After a successful submit we may have arrived here via #/deal?draft=<id>
+    // (the rep resumed a draft, then submitted). The draft row has been
+    // deleted, so ?draft=<id> in the URL no longer points to anything. Clear
+    // it so a refresh doesn't show the "draft no longer exists" notice.
+    if (typeof window !== 'undefined' && window.location.hash.startsWith('#/deal?')) {
+      window.history.replaceState(null, '', '#/deal');
+    }
     window.scrollTo(0, 0);
+  }
+
+  /**
+   * Save the current form state as a draft. Two paths:
+   *   - First-time save (currentDraftId is null): insert a new row, capture
+   *     the generated uuid, and update the URL so a refresh resumes this draft.
+   *   - Re-save (currentDraftId is set): update the existing row in place.
+   *
+   * draft_name is auto-generated from store_name + city on first save. We
+   * deliberately don't recompute it on subsequent saves — if the rep renamed
+   * it in the workspace, we don't want to clobber that rename when they
+   * re-save from the deal sheet.
+   *
+   * Errors are surfaced as a status badge rather than a blocking error toast
+   * — the rep's work is still in memory and they can retry. A 401 (auth
+   * expired) is the one case worth a louder warning, but Supabase already
+   * shows a session-expired interstitial in that case.
+   */
+  async function saveDraft() {
+    if (!session?.user?.id) {
+      setDraftStatus('error');
+      setError('You need to be signed in to save a draft.');
+      return;
+    }
+    setDraftStatus('saving');
+    setError(null);
+
+    try {
+      if (!currentDraftId) {
+        // First save — insert.
+        const { data, error: insErr } = await insertDraft({
+          userId: session.user.id,
+          email: session.user.email,
+          submitMode,
+          draft,
+          equipmentItems,
+          draftName: defaultDraftName(draft),
+        });
+        if (insErr) throw insErr;
+        setCurrentDraftId(data.id);
+        // Update the URL silently so a refresh re-hydrates this same draft.
+        // history.replaceState avoids a hashchange event (and therefore a
+        // re-render) — we just want the address bar to match reality.
+        if (typeof window !== 'undefined') {
+          window.history.replaceState(null, '', `#/deal?draft=${data.id}`);
+        }
+      } else {
+        // Subsequent save — update in place. Pass null for draftName so the
+        // rep's custom name (if any) is preserved.
+        const { error: upErr } = await updateDraft({
+          id: currentDraftId,
+          submitMode,
+          draft,
+          equipmentItems,
+          draftName: null,
+        });
+        if (upErr) throw upErr;
+      }
+      setDraftStatus('saved');
+    } catch (err) {
+      console.error('Save draft failed:', err);
+      setDraftStatus('error');
+      setError(`Could not save draft: ${err.message || 'unknown error'}`);
+    }
+  }
+
+  /**
+   * Switch the rep's submitMode (Quote ↔ Deal) without losing data.
+   *
+   * The risk we're guarding against: rep starts in Deal mode, fills in coffee
+   * spend / install date / graphics, then decides "actually let me just send
+   * them a quote first." Those deal-only sections will VISUALLY disappear in
+   * quote mode (hidden by submitMode === 'deal' gates), and if the rep then
+   * sends the quote and never switches back, their data sits there in draft
+   * state but never gets transmitted. Worse, if they hit "Start another" after
+   * sending the quote they'll lose it for sure.
+   *
+   * So when going Deal → Quote, we look at what deal-only fields currently
+   * have non-empty values, list them by label, and ask the rep to confirm.
+   * Values are NEVER cleared — they stay in draft so switching back restores
+   * the form exactly as it was. The confirmation is purely informational.
+   *
+   * Going Quote → Deal is always safe (nothing gets hidden) so we skip the
+   * prompt.
+   */
+  function changeSubmitMode(nextMode) {
+    if (nextMode === submitMode) return;
+
+    if (nextMode === 'quote' && submitMode === 'deal') {
+      // Find deal-only fields that currently have non-empty values.
+      const populatedDealOnly = [];
+      for (const [fieldKey, rule] of fieldRules) {
+        if (rule.applies_to !== 'deal') continue;
+        const value = draft[fieldKey];
+        const isEmpty =
+          value === null ||
+          value === undefined ||
+          value === false ||
+          (typeof value === 'string' && value.trim() === '');
+        if (!isEmpty) populatedDealOnly.push(rule.field_label || fieldKey);
+      }
+
+      if (populatedDealOnly.length > 0) {
+        // Show first 8 by name, then "and N more" if longer — confirm() doesn't
+        // give us much layout control but a short readable list is fine.
+        const preview = populatedDealOnly.slice(0, 8).join(', ');
+        const more = populatedDealOnly.length > 8 ? ` and ${populatedDealOnly.length - 8} more` : '';
+        const ok = window.confirm(
+          `Switching to Quote will hide: ${preview}${more}.\n\n` +
+          `Their values are kept and re-shown if you switch back to Deal. Continue?`
+        );
+        if (!ok) return;
+      }
+    }
+
+    setSubmitMode(nextMode);
+    setDraftStatus((s) => (s === 'saved' ? 'idle' : s));
   }
 
   /* Success screen — branches based on whether it was a deal or a quote */
@@ -609,15 +868,41 @@ ${repName}`;
     );
   }
 
+  // While we're fetching an existing draft from URL, show a quiet placeholder
+  // instead of the blank form. Rendering the blank form first and then
+  // replacing it ~300ms later feels broken — fields would visibly flip.
+  if (hydrating) {
+    return (
+      <div className="px-4 md:px-6 lg:px-10 py-10 max-w-4xl">
+        <div className="bg-white border border-page-200 rounded-lg shadow-card p-8 md:p-12 text-center">
+          <div className="w-12 h-12 rounded-full bg-page-50 border border-page-200 flex items-center justify-center mx-auto mb-4">
+            <svg className="w-5 h-5 text-slate-400 animate-spin" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h5M20 20v-5h-5M4 9a8 8 0 0114-2M20 15a8 8 0 01-14 2" />
+            </svg>
+          </div>
+          <p className="text-sm text-slate-600">Loading your draft…</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="px-4 md:px-6 lg:px-10 py-4 md:py-6 max-w-4xl">
       <div className="mb-5 md:mb-6">
-        <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">New deal</p>
+        <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">
+          {currentDraftId ? 'Resuming draft' : 'New deal'}
+        </p>
         <h1 className="text-2xl md:text-3xl font-light text-slate-900">Deal Sheet</h1>
         <p className="text-sm text-slate-600 mt-1 max-w-2xl">
           Complete the form and submit to create a new deal in the pipeline. After submission, the leasing team can edit the deal in the Deal Pipeline dashboard.
         </p>
       </div>
+
+      {hydrationError && (
+        <div className="mb-4 p-3 bg-warn/5 border border-warn/30 rounded text-xs text-slate-700">
+          {hydrationError}
+        </div>
+      )}
 
       {!isDealPipelineConfigured && (
         <div className="mb-4 p-4 bg-warn/5 border border-warn/30 rounded-lg">
@@ -631,111 +916,219 @@ ${repName}`;
         </div>
       )}
 
-      {/* ─── Section 1: Sales Rep & Submission ─── */}
-      <Section number="1" title="Sales Rep & Submission">
+      {/* ─── Mode toggle: Quote vs Deal ─── */}
+      {/* This is the v22a-v2 pivot. Selecting Quote shows the minimum set of
+          fields needed to send a customer-facing quote; selecting Deal shows
+          the full leasing/ops form. The rep can switch at any time without
+          losing data — see changeSubmitMode() for the data-loss confirmation. */}
+      <div className="mb-4 bg-white border border-page-200 rounded-lg p-2">
+        <div className="grid grid-cols-2 gap-2">
+          <button
+            type="button"
+            onClick={() => changeSubmitMode('quote')}
+            className={`text-left rounded-md px-4 py-3 border transition-colors
+              ${submitMode === 'quote'
+                ? 'bg-navy-900 border-navy-900 text-chalk-50 shadow-card'
+                : 'bg-white border-page-200 text-slate-700 hover:border-navy-300 hover:bg-page-50'}`}
+          >
+            <div className="flex items-center gap-2 mb-0.5">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+              </svg>
+              <span className="text-sm font-semibold">Quote</span>
+            </div>
+            <p className={`text-xs leading-snug ${submitMode === 'quote' ? 'text-chalk-50/80' : 'text-slate-500'}`}>
+              Send to customer for review
+            </p>
+          </button>
+          <button
+            type="button"
+            onClick={() => changeSubmitMode('deal')}
+            className={`text-left rounded-md px-4 py-3 border transition-colors
+              ${submitMode === 'deal'
+                ? 'bg-navy-900 border-navy-900 text-chalk-50 shadow-card'
+                : 'bg-white border-page-200 text-slate-700 hover:border-navy-300 hover:bg-page-50'}`}
+          >
+            <div className="flex items-center gap-2 mb-0.5">
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span className="text-sm font-semibold">Deal</span>
+            </div>
+            <p className={`text-xs leading-snug ${submitMode === 'deal' ? 'text-chalk-50/80' : 'text-slate-500'}`}>
+              Full submission to leasing/operations
+            </p>
+          </button>
+        </div>
+      </div>
+
+      {/* ─── Section: Sales Rep & Submission ─── */}
+      <Section title="Sales Rep & Submission">
         <FieldGrid cols={2}>
           <TextField label="Sales Rep First Name" required value={draft.sales_rep_first_name} onChange={(v) => update('sales_rep_first_name', v)} placeholder="From your profile" />
           <TextField label="Sales Rep Last Name"  required value={draft.sales_rep_last_name}  onChange={(v) => update('sales_rep_last_name', v)}  placeholder="From your profile" />
           <TextField label="Sales Rep Email"      required type="email" value={draft.sales_rep_email} onChange={(v) => update('sales_rep_email', v)} placeholder="rep@ronnoco.com" />
-          <TextField label="Route Number (RTE #)" value={draft.route_number} onChange={(v) => update('route_number', v)} placeholder="Route #" />
+          {/* route_number is deal-only per field_requirements — meta('route_number').visible
+              is true in deal mode (applies_to='deal') and false in quote mode. */}
+          {meta('route_number').visible && (
+            <TextField
+              label="Route Number (RTE #)"
+              required={meta('route_number').required}
+              optional={meta('route_number').isOptional}
+              value={draft.route_number}
+              onChange={(v) => update('route_number', v)}
+              placeholder="Route #"
+            />
+          )}
         </FieldGrid>
       </Section>
 
-      {/* ─── Section 2: Customer Identity ─── */}
-      <Section number="2" title="Customer Identity">
-        <Toggle label="Current Ronnoco Customer" hint="Toggle off if this is a new (not yet in CRM) customer"
-                checked={!draft.is_new_customer} onChange={(v) => update('is_new_customer', !v)} />
-        <FieldGrid cols={2}>
-          <TextField label="Customer Account #" value={draft.customer_account} onChange={(v) => update('customer_account', v)} placeholder="If existing customer" />
-          <LookupSelect label="C-Store or Food Service?" required listState={customerTypeList} value={draft.customer_type} onChange={(v) => update('customer_type', v)} placeholder="Select…" />
-          <TextField label="Sub Group" value={draft.sub_group} onChange={(v) => update('sub_group', v)} placeholder="Sub group if applicable" />
-        </FieldGrid>
-        <Toggle label="Henderson Account" hint="Henderson is a Ronnoco brand"
-                checked={draft.henderson_account} onChange={(v) => update('henderson_account', v)} />
-        <Toggle label="Change of Ownership" hint="Existing account changing hands"
-                checked={draft.change_of_ownership} onChange={(v) => update('change_of_ownership', v)} />
-        {draft.change_of_ownership && (
-          <div className="space-y-3 pl-4 ml-1 border-l-2 border-accent-500/50">
-            <TextField label="Verify Prior Account #" value={draft.prior_account_num} onChange={(v) => update('prior_account_num', v)} placeholder="Previous account number" />
-            <TextareaField label="Change of Ownership Details" rows={3} value={draft.change_details} onChange={(v) => update('change_details', v)} placeholder="Describe the change…" />
-          </div>
-        )}
-      </Section>
-
-      {/* ─── Section 3: Chain & Location ─── */}
-      <Section number="3" title="Chain & Location">
-        <Toggle label="Chain Store" hint="This location is part of a chain or franchise"
-                checked={draft.chain_store} onChange={(v) => update('chain_store', v)} />
-        {draft.chain_store && (
+      {/* ─── Section: Customer Identity (deal-only) ─── */}
+      {/* Whether they're a current Ronnoco customer, their account number,
+          sub-group, Henderson flag, change-of-ownership — none of this matters
+          to the customer reviewing a quote. The leasing team needs it later
+          when the quote converts to a deal, but it's purely internal. */}
+      {submitMode === 'deal' && (
+        <Section title="Customer Identity">
+          <Toggle label="Current Ronnoco Customer" hint="Toggle off if this is a new (not yet in CRM) customer"
+                  checked={!draft.is_new_customer} onChange={(v) => update('is_new_customer', !v)} />
           <FieldGrid cols={2}>
-            <TextField label="Existing Chain Ronnoco Group #" value={draft.chain_group_num} onChange={(v) => update('chain_group_num', v)} placeholder="Group #" />
-            <TextField label="Number of Locations" type="number" value={draft.number_of_locations} onChange={(v) => update('number_of_locations', v)} placeholder="Total store count" />
+            <TextField label="Customer Account #" value={draft.customer_account} onChange={(v) => update('customer_account', v)} placeholder="If existing customer" />
+            <LookupSelect label="C-Store or Food Service?" required listState={customerTypeList} value={draft.customer_type} onChange={(v) => update('customer_type', v)} placeholder="Select…" />
+            <TextField label="Sub Group" value={draft.sub_group} onChange={(v) => update('sub_group', v)} placeholder="Sub group if applicable" />
           </FieldGrid>
+          <Toggle label="Henderson Account" hint="Henderson is a Ronnoco brand"
+                  checked={draft.henderson_account} onChange={(v) => update('henderson_account', v)} />
+          <Toggle label="Change of Ownership" hint="Existing account changing hands"
+                  checked={draft.change_of_ownership} onChange={(v) => update('change_of_ownership', v)} />
+          {draft.change_of_ownership && (
+            <div className="space-y-3 pl-4 ml-1 border-l-2 border-accent-500/50">
+              <TextField label="Verify Prior Account #" value={draft.prior_account_num} onChange={(v) => update('prior_account_num', v)} placeholder="Previous account number" />
+              <TextareaField label="Change of Ownership Details" rows={3} value={draft.change_details} onChange={(v) => update('change_details', v)} placeholder="Describe the change…" />
+            </div>
+          )}
+        </Section>
+      )}
+
+      {/* ─── Section: Chain & Location ─── */}
+      {/* Store name, address, city/state/zip — required in both modes (the
+          customer needs to see the shipping address on the quote). Chain-store
+          flag and the optional legal-business-name / store-phone fields are
+          deal-only. */}
+      <Section title="Chain & Location">
+        {submitMode === 'deal' && (
+          <>
+            <Toggle label="Chain Store" hint="This location is part of a chain or franchise"
+                    checked={draft.chain_store} onChange={(v) => update('chain_store', v)} />
+            {draft.chain_store && (
+              <FieldGrid cols={2}>
+                <TextField label="Existing Chain Ronnoco Group #" value={draft.chain_group_num} onChange={(v) => update('chain_group_num', v)} placeholder="Group #" />
+                <TextField label="Number of Locations" type="number" value={draft.number_of_locations} onChange={(v) => update('number_of_locations', v)} placeholder="Total store count" />
+              </FieldGrid>
+            )}
+          </>
         )}
         <FieldGrid cols={2}>
           <TextField span={2} label="Store / Business Name (DBA)" required value={draft.store_name} onChange={(v) => update('store_name', v)} placeholder="Store or business name" />
-          <TextField span={2} label="Legal Business Name" value={draft.legal_business_name} onChange={(v) => update('legal_business_name', v)} placeholder="Legal entity name if different" />
+          {meta('legal_business_name').visible && (
+            <TextField
+              span={2}
+              label="Legal Business Name"
+              required={meta('legal_business_name').required}
+              optional={meta('legal_business_name').isOptional}
+              value={draft.legal_business_name}
+              onChange={(v) => update('legal_business_name', v)}
+              placeholder="Legal entity name if different"
+            />
+          )}
           <TextField span={2} label="Street Address" required value={draft.address} onChange={(v) => update('address', v)} placeholder="Street address" />
           <TextField label="City" required value={draft.city} onChange={(v) => update('city', v)} placeholder="City" />
           <SelectField label="State" required value={draft.state} onChange={(v) => update('state', v)} options={US_STATES.map(([code, name]) => ({ value: code, label: `${code} — ${name}` }))} placeholder="Select state…" />
           <TextField label="Zip Code" required value={draft.zip_code} onChange={(v) => update('zip_code', v)} placeholder="Zip" />
-          <TextField label="Store Phone" type="tel" value={draft.store_phone} onChange={(v) => update('store_phone', v)} placeholder="Store phone" />
+          {meta('store_phone').visible && (
+            <TextField
+              label="Store Phone"
+              type="tel"
+              required={meta('store_phone').required}
+              optional={meta('store_phone').isOptional}
+              value={draft.store_phone}
+              onChange={(v) => update('store_phone', v)}
+              placeholder="Store phone"
+            />
+          )}
         </FieldGrid>
       </Section>
 
-      {/* ─── Section 4: Primary Contact ─── */}
-      <Section number="4" title="Primary Contact">
+      {/* ─── Section: Primary Contact ─── */}
+      {/* First/last name + email are needed in both modes — quote mode needs the
+          email so mailto: has a recipient. Cell phone is deal-only. */}
+      <Section title="Primary Contact">
         <FieldGrid cols={2}>
           <TextField label="Contact First Name" required value={draft.contact_first_name} onChange={(v) => update('contact_first_name', v)} placeholder="First name" />
           <TextField label="Contact Last Name"  required value={draft.contact_last_name}  onChange={(v) => update('contact_last_name', v)}  placeholder="Last name" />
-          <TextField label="Contact Cell Phone" type="tel" value={draft.contact_cell} onChange={(v) => update('contact_cell', v)} placeholder="(555) 000-0000" />
+          {meta('contact_cell').visible && (
+            <TextField
+              label="Contact Cell Phone"
+              type="tel"
+              required={meta('contact_cell').required}
+              optional={meta('contact_cell').isOptional}
+              value={draft.contact_cell}
+              onChange={(v) => update('contact_cell', v)}
+              placeholder="(555) 000-0000"
+            />
+          )}
           <TextField label="Contact Email" required type="email" value={draft.contact_email} onChange={(v) => update('contact_email', v)} placeholder="customer@email.com" />
         </FieldGrid>
       </Section>
 
-      {/* ─── Section 5: Coffee Program & Delivery ─── */}
-      <Section number="5" title="Coffee Program & Delivery">
-        <FieldGrid cols={2}>
-          <LookupSelect label="Coffee Program" listState={coffeeProgramList} value={draft.coffee_program} onChange={(v) => update('coffee_program', v)} placeholder="Select program…" />
-          <LookupSelect
-            label="Distribution Method"
-            required
-            listState={distributionList}
-            value={draft.distribution_method}
-            onChange={(v) => {
-              // When switching to Indirect, the distributor handles delivery —
-              // clear any DSD-only values so stale data isn't submitted.
-              if (v === 'Indirect (Distributor)') {
-                setDraft((p) => ({ ...p, distribution_method: v, delivery_method: '', delivery_recurrence: '' }));
-              } else {
-                update('distribution_method', v);
-              }
-            }}
-            placeholder="DSD or Indirect…"
-          />
-          <TextField label="Current Coffee Supplier" value={draft.current_coffee_supplier} onChange={(v) => update('current_coffee_supplier', v)} placeholder="Existing supplier name" />
-          <TextField
-            label="Service included with Sales and Marketing Agreement"
-            value={draft.parts_service_option}
-            onChange={(v) => update('parts_service_option', v)}
-            placeholder="Service terms / notes"
-            hint="Customer will need to sign the Sales and Marketing Agreement"
-          />
-        </FieldGrid>
-
-        {/* DSD-only: Ronnoco is delivering, so the leasing team needs to know how & how often.
-            For Indirect deals these are handled by the distributor and aren't asked here. */}
-        {isDSD && (
+      {/* ─── Section: Coffee Program & Delivery (deal-only) ─── */}
+      {/* Distribution method, coffee program selection, current supplier,
+          parts/service option — operational details that the leasing team
+          works out internally. Not customer-facing on the quote. */}
+      {submitMode === 'deal' && (
+        <Section title="Coffee Program & Delivery">
           <FieldGrid cols={2}>
-            <TextField label="How will it be delivered?" value={draft.delivery_method} onChange={(v) => update('delivery_method', v)} placeholder="e.g. truck, courier" />
-            <TextField label="Final Delivery Recurrence" value={draft.delivery_recurrence} onChange={(v) => update('delivery_recurrence', v)} placeholder="e.g. weekly, bi-weekly" />
+            <LookupSelect label="Coffee Program" listState={coffeeProgramList} value={draft.coffee_program} onChange={(v) => update('coffee_program', v)} placeholder="Select program…" />
+            <LookupSelect
+              label="Distribution Method"
+              required
+              listState={distributionList}
+              value={draft.distribution_method}
+              onChange={(v) => {
+                // When switching to Indirect, the distributor handles delivery —
+                // clear any DSD-only values so stale data isn't submitted.
+                if (v === 'Indirect (Distributor)') {
+                  setDraft((p) => ({ ...p, distribution_method: v, delivery_method: '', delivery_recurrence: '' }));
+                } else {
+                  update('distribution_method', v);
+                }
+              }}
+              placeholder="DSD or Indirect…"
+            />
+            <TextField label="Current Coffee Supplier" value={draft.current_coffee_supplier} onChange={(v) => update('current_coffee_supplier', v)} placeholder="Existing supplier name" />
+            <TextField
+              label="Service included with Sales and Marketing Agreement"
+              value={draft.parts_service_option}
+              onChange={(v) => update('parts_service_option', v)}
+              placeholder="Service terms / notes"
+              hint="Customer will need to sign the Sales and Marketing Agreement"
+            />
           </FieldGrid>
-        )}
-      </Section>
 
-      {/* ─── Section 6: Distributor — only if Indirect ─── */}
-      {isIndirect && (
-        <Section number="6" title="Distributor Information">
+          {/* DSD-only: Ronnoco is delivering, so the leasing team needs to know how & how often.
+              For Indirect deals these are handled by the distributor and aren't asked here. */}
+          {isDSD && (
+            <FieldGrid cols={2}>
+              <TextField label="How will it be delivered?" value={draft.delivery_method} onChange={(v) => update('delivery_method', v)} placeholder="e.g. truck, courier" />
+              <TextField label="Final Delivery Recurrence" value={draft.delivery_recurrence} onChange={(v) => update('delivery_recurrence', v)} placeholder="e.g. weekly, bi-weekly" />
+            </FieldGrid>
+          )}
+        </Section>
+      )}
+
+      {/* ─── Section: Distributor (deal-only, and only if Indirect distribution) ─── */}
+      {submitMode === 'deal' && isIndirect && (
+        <Section title="Distributor Information">
           <FieldGrid cols={2}>
             <LookupSelect label="Parent Distributor" required listState={distributorList} value={draft.parent_distributor} onChange={(v) => update('parent_distributor', v)} placeholder="Select distributor…" />
             <TextField label="Parent Distributor #" value={draft.parent_distributor_num} onChange={(v) => update('parent_distributor_num', v)} placeholder="Distributor #" />
@@ -751,54 +1144,64 @@ ${repName}`;
         </Section>
       )}
 
-      {/* ─── Section 7: ROM ─── */}
-      <Section number={isIndirect ? '7' : '6'} title="Ronnoco Region (ROM)">
-        <FieldGrid cols={2}>
-          <LookupSelect label="Select the ROM" required listState={romPersonList} value={draft.rom_person} onChange={(v) => update('rom_person', v)} placeholder="Select ROM…" />
-          <TextField
-            label="ROM Email"
-            value={draft.rom_email}
-            onChange={(v) => update('rom_email', v)}
-            placeholder="Auto-filled from ROM selection"
-            hint={draft.rom_person && !draft.rom_email ? 'Not yet on file — admin can add via Dropdown Lists' : null}
-          />
-          <LookupSelect label="ROM Region" listState={romRegionList} value={draft.rom_region} onChange={(v) => update('rom_region', v)} placeholder="Select region…" span={2} />
-        </FieldGrid>
-      </Section>
+      {/* ─── Section: ROM (deal-only) ─── */}
+      {/* The Regional Operations Manager assignment is an internal routing
+          concern. Customer doesn't need to see it on the quote. */}
+      {submitMode === 'deal' && (
+        <Section title="Ronnoco Region (ROM)">
+          <FieldGrid cols={2}>
+            <LookupSelect label="Select the ROM" required listState={romPersonList} value={draft.rom_person} onChange={(v) => update('rom_person', v)} placeholder="Select ROM…" />
+            <TextField
+              label="ROM Email"
+              value={draft.rom_email}
+              onChange={(v) => update('rom_email', v)}
+              placeholder="Auto-filled from ROM selection"
+              hint={draft.rom_person && !draft.rom_email ? 'Not yet on file — admin can add via Dropdown Lists' : null}
+            />
+            <LookupSelect label="ROM Region" listState={romRegionList} value={draft.rom_region} onChange={(v) => update('rom_region', v)} placeholder="Select region…" span={2} />
+          </FieldGrid>
+        </Section>
+      )}
 
-      {/* ─── Section 8: Equipment & Deal Info ─── */}
-      <Section number={isIndirect ? '8' : '7'} title="Equipment & Deal Information">
-        <div className="mb-4">
-          <Label required>Deal Type</Label>
-          <div className="flex flex-wrap gap-2 mt-1">
-            {dealTypeList.options.map((opt) => {
-              const isFinanceType = opt.value === 'Lease Equipment' || opt.value === 'Finance Equipment';
-              const disabled = isFinanceType && equipmentItems.length > 0 && !qualifiesForFinance;
-              return (
-                <button
-                  key={opt.value}
-                  type="button"
-                  onClick={() => !disabled && update('deal_type', opt.value)}
-                  disabled={disabled}
-                  title={disabled ? `Total must be at least ${formatUSD(LEASE_MIN_PRICE)} for ${opt.value}` : undefined}
-                  className={`px-3 py-1.5 rounded-full border text-xs md:text-sm transition-colors
-                    ${draft.deal_type === opt.value
-                      ? 'bg-navy-900 border-navy-900 text-chalk-50'
-                      : disabled
-                        ? 'bg-page-50 border-page-200 text-slate-400 cursor-not-allowed'
-                        : 'bg-white border-page-200 text-slate-700 hover:border-navy-300'}`}
-                >
-                  {opt.value}
-                </button>
-              );
-            })}
+      {/* ─── Section: Equipment & Deal Info ─── */}
+      {/* Equipment selection is the heart of the quote — the customer absolutely
+          needs to see what's being quoted. Deal Type (lease vs purchase) and the
+          two financial fields (last-3-month coffee spend, expected monthly
+          sales) are leasing-team inputs not relevant on the customer-facing quote. */}
+      <Section title="Equipment & Deal Information">
+        {submitMode === 'deal' && (
+          <div className="mb-4">
+            <Label required>Deal Type</Label>
+            <div className="flex flex-wrap gap-2 mt-1">
+              {dealTypeList.options.map((opt) => {
+                const isFinanceType = opt.value === 'Lease Equipment' || opt.value === 'Finance Equipment';
+                const disabled = isFinanceType && equipmentItems.length > 0 && !qualifiesForFinance;
+                return (
+                  <button
+                    key={opt.value}
+                    type="button"
+                    onClick={() => !disabled && update('deal_type', opt.value)}
+                    disabled={disabled}
+                    title={disabled ? `Total must be at least ${formatUSD(LEASE_MIN_PRICE)} for ${opt.value}` : undefined}
+                    className={`px-3 py-1.5 rounded-full border text-xs md:text-sm transition-colors
+                      ${draft.deal_type === opt.value
+                        ? 'bg-navy-900 border-navy-900 text-chalk-50'
+                        : disabled
+                          ? 'bg-page-50 border-page-200 text-slate-400 cursor-not-allowed'
+                          : 'bg-white border-page-200 text-slate-700 hover:border-navy-300'}`}
+                  >
+                    {opt.value}
+                  </button>
+                );
+              })}
+            </div>
+            {equipmentItems.length > 0 && !qualifiesForFinance && (
+              <p className="mt-2 text-xs text-slate-500">
+                Lease and finance options become available when the deal total is at least {formatUSD(LEASE_MIN_PRICE)}.
+              </p>
+            )}
           </div>
-          {equipmentItems.length > 0 && !qualifiesForFinance && (
-            <p className="mt-2 text-xs text-slate-500">
-              Lease and finance options become available when the deal total is at least {formatUSD(LEASE_MIN_PRICE)}.
-            </p>
-          )}
-        </div>
+        )}
 
         {/* Equipment picker */}
         <div className="mb-4">
@@ -819,8 +1222,14 @@ ${repName}`;
                     <EquipmentRow
                       key={item.equipment_id || idx}
                       item={item}
-                      onQuantityChange={(q) => setEquipmentItems((prev) => prev.map((it, i) => i === idx ? { ...it, quantity: q } : it))}
-                      onRemove={() => setEquipmentItems((prev) => prev.filter((_, i) => i !== idx))}
+                      onQuantityChange={(q) => {
+                        setEquipmentItems((prev) => prev.map((it, i) => i === idx ? { ...it, quantity: q } : it));
+                        markDraftDirty();
+                      }}
+                      onRemove={() => {
+                        setEquipmentItems((prev) => prev.filter((_, i) => i !== idx));
+                        markDraftDirty();
+                      }}
                     />
                   ))}
                 </ul>
@@ -839,40 +1248,72 @@ ${repName}`;
           </div>
         </div>
 
-        <FieldGrid cols={2}>
-          <TextField label="Coffee Spend (Last 3 Months)" type="number" value={draft.coffee_spend_3mo} onChange={(v) => update('coffee_spend_3mo', v)} placeholder="$0" hint="Customer's coffee-related spend, last 3 months" />
-          <TextField label="Expected Monthly Sales" type="number" value={draft.expected_monthly_sales} onChange={(v) => update('expected_monthly_sales', v)} placeholder="$0" hint="Customer's projected monthly sales" />
-        </FieldGrid>
-      </Section>
-
-      {/* ─── Section 9: Installation ─── */}
-      <Section number={isIndirect ? '9' : '8'} title="Installation">
-        <FieldGrid cols={2}>
-          <TextField label="Target Install Date" required type="date" value={draft.target_install_date} onChange={(v) => update('target_install_date', v)} />
-          <TextField label="Need By Date" type="date" value={draft.need_by_date} onChange={(v) => update('need_by_date', v)} hint="Hard deadline if different from target" />
-        </FieldGrid>
-        <Toggle label="Emergency Install" hint="This deal requires priority installation scheduling"
-                checked={draft.emergency_install} onChange={(v) => update('emergency_install', v)} />
-        {draft.emergency_install && (
-          <div className="pl-4 ml-1 border-l-2 border-accent-500/50">
-            <TextareaField label="Emergency Install Details" rows={3} value={draft.emergency_install_details} onChange={(v) => update('emergency_install_details', v)} placeholder="Why is this urgent?" />
-          </div>
+        {submitMode === 'deal' && (
+          <FieldGrid cols={2}>
+            <TextField label="Coffee Spend (Last 3 Months)" type="number" value={draft.coffee_spend_3mo} onChange={(v) => update('coffee_spend_3mo', v)} placeholder="$0" hint="Customer's coffee-related spend, last 3 months" />
+            <TextField label="Expected Monthly Sales" type="number" value={draft.expected_monthly_sales} onChange={(v) => update('expected_monthly_sales', v)} placeholder="$0" hint="Customer's projected monthly sales" />
+          </FieldGrid>
         )}
       </Section>
 
-      {/* ─── Section 10: Graphics ─── */}
-      <Section number={isIndirect ? '10' : '9'} title="Graphics">
-        <FieldGrid cols={2}>
-          <LookupSelect span={2} label="Graphics Package" listState={graphicsList} value={draft.graphics_package} onChange={(v) => update('graphics_package', v)} placeholder="Select package…" />
-        </FieldGrid>
-        <Toggle label="Ship Graphics with Equipment" checked={draft.ship_graphics_with_equip} onChange={(v) => update('ship_graphics_with_equip', v)} />
-        <Toggle label="Existing Custom Graphics" hint="Customer already has custom graphics on file"
-                checked={draft.has_custom_graphics} onChange={(v) => update('has_custom_graphics', v)} />
-      </Section>
+      {/* ─── Section: Installation (deal-only) ─── */}
+      {/* Install date and emergency flag are post-sale logistics. The customer
+          sees pricing on the quote, not install scheduling. */}
+      {submitMode === 'deal' && (
+        <Section title="Installation">
+          <FieldGrid cols={2}>
+            <TextField label="Target Install Date" required type="date" value={draft.target_install_date} onChange={(v) => update('target_install_date', v)} />
+            <TextField label="Need By Date" type="date" value={draft.need_by_date} onChange={(v) => update('need_by_date', v)} hint="Hard deadline if different from target" />
+          </FieldGrid>
+          <Toggle label="Emergency Install" hint="This deal requires priority installation scheduling"
+                  checked={draft.emergency_install} onChange={(v) => update('emergency_install', v)} />
+          {draft.emergency_install && (
+            <div className="pl-4 ml-1 border-l-2 border-accent-500/50">
+              <TextareaField label="Emergency Install Details" rows={3} value={draft.emergency_install_details} onChange={(v) => update('emergency_install_details', v)} placeholder="Why is this urgent?" />
+            </div>
+          )}
+        </Section>
+      )}
 
-      {/* ─── Section 11: Notes ─── */}
-      <Section number={isIndirect ? '11' : '10'} title="Additional Notes">
-        <TextareaField label="Notes" rows={4} value={draft.notes} onChange={(v) => update('notes', v)} placeholder="Any additional information, special requirements, or context for this deal…" />
+      {/* ─── Section: Graphics (deal-only) ─── */}
+      {/* Graphics package selection happens after the customer accepts. */}
+      {submitMode === 'deal' && (
+        <Section title="Graphics">
+          <FieldGrid cols={2}>
+            <LookupSelect span={2} label="Graphics Package" listState={graphicsList} value={draft.graphics_package} onChange={(v) => update('graphics_package', v)} placeholder="Select package…" />
+          </FieldGrid>
+          <Toggle label="Ship Graphics with Equipment" checked={draft.ship_graphics_with_equip} onChange={(v) => update('ship_graphics_with_equip', v)} />
+          <Toggle label="Existing Custom Graphics" hint="Customer already has custom graphics on file"
+                  checked={draft.has_custom_graphics} onChange={(v) => update('has_custom_graphics', v)} />
+        </Section>
+      )}
+
+      {/* ─── Section: Internal Notes ─── */}
+      {/* Internal Notes — visible to the leasing/ops team but NEVER rendered on
+          the customer-facing quote page (see QuoteView.jsx). The lock badge
+          makes that contract obvious so reps don't paste anything they'd
+          regret a customer reading. */}
+      <Section title="Internal Notes">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <Label optional>Internal Notes</Label>
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-medium uppercase tracking-wider -mt-1">
+              <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m0 0v2m0-2h2m-2 0h-2m6-9V7a4 4 0 00-8 0v3m12 0H4a1 1 0 00-1 1v9a1 1 0 001 1h16a1 1 0 001-1v-9a1 1 0 00-1-1z" />
+              </svg>
+              Not visible to customer
+            </span>
+          </div>
+          <textarea
+            value={draft.notes ?? ''}
+            onChange={(e) => update('notes', e.target.value)}
+            rows={4}
+            placeholder="Any additional information, special requirements, or context for the leasing/ops team — never shown on the customer-facing quote."
+            className="w-full px-3 py-2 bg-page-50 border border-page-200 rounded text-sm
+                       focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10 focus:bg-white
+                       focus:outline-none transition-colors resize-y"
+          />
+        </div>
       </Section>
 
       {/* ─── Deal Summary ─── */}
@@ -885,66 +1326,120 @@ ${repName}`;
         />
       )}
 
-      {/* ─── Quote-prep panel ─── */}
-      {/* Optional inputs that only matter if the rep is submitting as a quote.
-          We always show them (collapsed by default) so the rep can fill in a
-          cover note or change the valid-until date before clicking Submit as Quote. */}
-      <details className="bg-white border border-page-200 rounded-lg overflow-hidden">
-        <summary className="px-5 py-3 cursor-pointer text-sm font-medium text-slate-700 hover:bg-page-50 transition-colors flex items-center gap-2">
-          <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-          </svg>
-          Quote options
-          <span className="text-xs text-slate-500 font-normal ml-1">— only matters if you submit as a quote</span>
-        </summary>
-        <div className="px-5 pb-5 pt-2 border-t border-page-100">
-          <p className="text-xs text-slate-600 mb-3 leading-relaxed max-w-2xl">
-            A quote is the same deal in the "sales" phase, waiting on the customer's decision.
-            After you click <span className="font-medium text-slate-800">Submit as Quote</span> below,
-            your email client opens with a message to the customer ready to send, including a link
-            to view the quote online.
-          </p>
-          <FieldGrid cols={2}>
-            <TextareaField
-              span={2}
-              label="Cover note to customer (optional)"
-              rows={3}
-              value={draft.quote_cover_note}
-              onChange={(v) => update('quote_cover_note', v)}
-              placeholder="e.g. Following up on our conversation Tuesday — here's the formal quote for the program we discussed."
-            />
-            <TextField
-              label="Quote valid until"
-              type="date"
-              value={draft.quote_valid_until}
-              onChange={(v) => update('quote_valid_until', v)}
-              placeholder=""
-              hint="Defaults to 30 days from today if left blank."
-            />
-          </FieldGrid>
-        </div>
-      </details>
+      {/* ─── Quote-prep panel (quote mode only) ─── */}
+      {/* In quote mode the rep is ABOUT to send something to the customer, so
+          these inputs are foreground material — open by default. The cover
+          note's "Visible to customer" badge makes the contract clear: this
+          IS the text the customer reads, opposite the Internal Notes block. */}
+      {submitMode === 'quote' && (
+        <details
+          open
+          className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4"
+        >
+          <summary className="px-5 py-3 cursor-pointer text-sm font-medium text-slate-700 hover:bg-page-50 transition-colors flex items-center gap-2">
+            <svg className="w-4 h-4 text-slate-400" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+            </svg>
+            Quote options
+            <span className="text-xs text-slate-500 font-normal ml-1">— customer-facing message details</span>
+          </summary>
+          <div className="px-5 pb-5 pt-2 border-t border-page-100">
+            <p className="text-xs text-slate-600 mb-3 leading-relaxed max-w-2xl">
+              When you click <span className="font-medium text-slate-800">Submit as Quote</span> below,
+              your email client opens with a message to the customer ready to send, including a link
+              to view the quote online.
+            </p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4">
+              {/* Cover note — explicitly labeled as customer-visible so the rep
+                  doesn't paste anything they'd want to keep internal. */}
+              <div className="md:col-span-2">
+                <div className="flex items-center gap-2 mb-1">
+                  <Label optional>Cover note to customer</Label>
+                  <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-navy-900/10 text-navy-800 text-[10px] font-medium uppercase tracking-wider -mt-1">
+                    <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                    </svg>
+                    Visible to customer
+                  </span>
+                </div>
+                <textarea
+                  value={draft.quote_cover_note ?? ''}
+                  onChange={(e) => update('quote_cover_note', e.target.value)}
+                  rows={3}
+                  placeholder="e.g. Following up on our conversation Tuesday — here's the formal quote for the program we discussed."
+                  className="w-full px-3 py-2 bg-page-50 border border-page-200 rounded text-sm
+                             focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10 focus:bg-white
+                             focus:outline-none transition-colors resize-y"
+                />
+              </div>
+              <TextField
+                label="Quote valid until"
+                optional
+                type="date"
+                value={draft.quote_valid_until}
+                onChange={(v) => update('quote_valid_until', v)}
+                placeholder=""
+                hint="Defaults to 30 days from today if left blank."
+              />
+            </div>
+          </div>
+        </details>
+      )}
 
       {/* ─── Submit ─── */}
+      {/* Only one submit button at a time — the one matching the chosen mode.
+          The mode toggle at the top of the form is the single place to switch;
+          having both buttons visible here was the v22a-final design but
+          duplicated the choice and led to ambiguity ("which button matches
+          what I've filled out?").
+
+          The Save Draft button is secondary — outlined rather than filled —
+          so the primary action (submit) stays visually dominant. Save Draft
+          lets the rep step away mid-form without losing work; the draft
+          shows up in the My Deals workspace for resumption later. */}
       <div className="bg-white border border-page-200 rounded-lg p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="text-sm text-slate-600 max-w-md">
           <div className="font-medium text-slate-900 mb-0.5">Ready to send?</div>
-          <span className="text-slate-700">Submit as Quote</span> emails the customer for review.{' '}
-          <span className="text-slate-700">Submit Deal</span> sends it straight to the leasing team.
+          {submitMode === 'quote' ? (
+            <>This emails the customer for review. After they reply, you'll record their decision in the Pipeline dashboard.</>
+          ) : (
+            <>This goes straight to the leasing/operations team — use Deal only if the customer has already agreed.</>
+          )}
         </div>
         <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-          <button onClick={submitAsQuote} disabled={submitting || !isDealPipelineConfigured}
-                  className="px-5 py-3 border-2 border-navy-900 text-navy-900 font-medium rounded
-                             hover:bg-navy-50 disabled:opacity-40 disabled:cursor-not-allowed
-                             transition-colors whitespace-nowrap">
-            {submitting ? '…' : 'Submit as Quote'}
-          </button>
-          <button onClick={submitDeal} disabled={submitting || !isDealPipelineConfigured}
-                  className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
-                             hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
-                             transition-colors whitespace-nowrap">
-            {submitting ? 'Submitting…' : 'Submit Deal →'}
-          </button>
+          {/* Save Draft — secondary action. The status badge sits just above
+              the button on mobile (status above its action) and tucks inline
+              on desktop for a tighter row. */}
+          <div className="flex flex-col items-stretch sm:items-end gap-1">
+            <button
+              onClick={saveDraft}
+              disabled={submitting || draftStatus === 'saving'}
+              className="px-4 py-3 bg-white border border-page-300 text-slate-700 font-medium rounded
+                         hover:bg-page-50 hover:border-navy-300 disabled:opacity-40
+                         disabled:cursor-not-allowed transition-colors whitespace-nowrap text-sm"
+              title={currentDraftId ? 'Update your saved draft' : 'Save what you have so you can finish it later'}
+            >
+              {draftStatus === 'saving' ? 'Saving…' : (currentDraftId ? 'Update draft' : 'Save draft')}
+            </button>
+            <DraftStatusBadge status={draftStatus} hasDraftId={Boolean(currentDraftId)} />
+          </div>
+
+          {submitMode === 'quote' ? (
+            <button onClick={submitAsQuote} disabled={submitting || !isDealPipelineConfigured}
+                    className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
+                               hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
+                               transition-colors whitespace-nowrap">
+              {submitting ? 'Submitting…' : 'Submit as Quote →'}
+            </button>
+          ) : (
+            <button onClick={submitDeal} disabled={submitting || !isDealPipelineConfigured}
+                    className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
+                               hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
+                               transition-colors whitespace-nowrap">
+              {submitting ? 'Submitting…' : 'Submit Deal →'}
+            </button>
+          )}
         </div>
       </div>
 
@@ -972,6 +1467,7 @@ ${repName}`;
                 quantity: 1,
               }];
             });
+            markDraftDirty();
             setPickerOpen(false);
           }}
           onClose={() => setPickerOpen(false)}
@@ -1033,13 +1529,60 @@ function DealSummary({ total, monthlyEstimate, qualifies, dealType }) {
   );
 }
 
+/* ───────────────────────── Draft status badge ───────────────────────── */
+
+/**
+ * Tiny indicator sitting under the Save Draft button. Four states:
+ *   - idle           → no badge (clean form, nothing to say)
+ *   - saving         → "Saving…"
+ *   - saved          → "✓ Saved" with the last-saved time omitted (always
+ *                       just-now from the user's perspective; a timestamp
+ *                       would be noisy)
+ *   - error          → "Couldn't save" — full error message is in the main
+ *                       error block above the form
+ *
+ * Kept minimal because the row already has a primary submit button right
+ * next to it; a chatty status message would compete for attention.
+ */
+function DraftStatusBadge({ status, hasDraftId }) {
+  if (status === 'idle') {
+    // Nothing to show. If a draft is loaded but not currently dirty, that's
+    // already reflected in the "Update draft" button label.
+    return null;
+  }
+  if (status === 'saving') {
+    return <span className="text-[11px] text-slate-500 text-center sm:text-right">Saving…</span>;
+  }
+  if (status === 'saved') {
+    return (
+      <span className="text-[11px] text-ok flex items-center justify-center sm:justify-end gap-1">
+        <svg className="w-3 h-3" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="m5 13 4 4L19 7" />
+        </svg>
+        {hasDraftId ? 'Draft updated' : 'Draft saved'}
+      </span>
+    );
+  }
+  if (status === 'error') {
+    return <span className="text-[11px] text-bad text-center sm:text-right">Couldn't save</span>;
+  }
+  return null;
+}
+
 /* ───────────────────────── Form primitives ───────────────────────── */
 
 function Section({ number, title, children }) {
+  // The numbered-circle badge is rendered only when `number` is provided.
+  // The v22a-v2 pivot drops static numbering across the deal sheet because
+  // dynamic show/hide on submitMode would leave gaps ("Section 1, then 5,
+  // then 8…"). Title alone is clear enough, especially since each section's
+  // dark-navy header strip already reads as a visual break.
   return (
     <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
       <header className="bg-navy-900 text-chalk-50 px-4 md:px-5 py-3 flex items-center gap-3">
-        <span className="w-6 h-6 rounded-full bg-white/15 flex items-center justify-center text-xs font-bold">{number}</span>
+        {number != null && (
+          <span className="w-6 h-6 rounded-full bg-white/15 flex items-center justify-center text-xs font-bold">{number}</span>
+        )}
         <h2 className="text-sm md:text-base font-medium">{title}</h2>
       </header>
       <div className="p-4 md:p-5 space-y-3">{children}</div>
@@ -1050,17 +1593,27 @@ function FieldGrid({ cols, children }) {
   const colClass = cols === 3 ? 'md:grid-cols-3' : 'md:grid-cols-2';
   return <div className={`grid grid-cols-1 ${colClass} gap-3 md:gap-4`}>{children}</div>;
 }
-function Label({ children, required }) {
+function Label({ children, required, optional }) {
+  // `required` and `optional` are mutually exclusive in practice — a field is
+  // either required (red asterisk) or optional (muted "(optional)" suffix) or
+  // neither (the historical default, used when the caller wants no annotation).
+  // We don't enforce mutual exclusion in code because a future variant might
+  // legitimately want both (e.g. a required-but-soft field), but we render the
+  // asterisk first and the optional suffix only when required is false.
   return (
     <span className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1 font-semibold">
-      {children}{required && <span className="text-bad ml-0.5">*</span>}
+      {children}
+      {required && <span className="text-bad ml-0.5">*</span>}
+      {optional && !required && (
+        <span className="ml-1 text-slate-400 font-normal normal-case tracking-normal">(optional)</span>
+      )}
     </span>
   );
 }
-function TextField({ label, required, type = 'text', value, onChange, placeholder, hint, span, disabled }) {
+function TextField({ label, required, optional, type = 'text', value, onChange, placeholder, hint, span, disabled }) {
   return (
     <label className={`block ${span === 2 ? 'md:col-span-2' : ''}`}>
-      <Label required={required}>{label}</Label>
+      <Label required={required} optional={optional}>{label}</Label>
       <input
         type={type}
         value={value ?? ''}
@@ -1075,10 +1628,10 @@ function TextField({ label, required, type = 'text', value, onChange, placeholde
     </label>
   );
 }
-function TextareaField({ label, value, onChange, placeholder, rows = 3, span = 2 }) {
+function TextareaField({ label, required, optional, value, onChange, placeholder, rows = 3, span = 2 }) {
   return (
     <label className={`block ${span === 2 ? 'md:col-span-2' : ''}`}>
-      <Label>{label}</Label>
+      <Label required={required} optional={optional}>{label}</Label>
       <textarea
         value={value ?? ''}
         onChange={(e) => onChange(e.target.value)}
@@ -1091,10 +1644,10 @@ function TextareaField({ label, value, onChange, placeholder, rows = 3, span = 2
     </label>
   );
 }
-function SelectField({ label, required, value, onChange, options, placeholder, span }) {
+function SelectField({ label, required, optional, value, onChange, options, placeholder, span }) {
   return (
     <label className={`block ${span === 2 ? 'md:col-span-2' : ''}`}>
-      <Label required={required}>{label}</Label>
+      <Label required={required} optional={optional}>{label}</Label>
       <select
         value={value || ''}
         onChange={(e) => onChange(e.target.value)}
@@ -1109,11 +1662,11 @@ function SelectField({ label, required, value, onChange, options, placeholder, s
   );
 }
 /** LookupSelect — like SelectField but pulls options from a useLookupList result */
-function LookupSelect({ label, required, listState, value, onChange, placeholder, span }) {
+function LookupSelect({ label, required, optional, listState, value, onChange, placeholder, span }) {
   const { options, loading, error } = listState;
   return (
     <label className={`block ${span === 2 ? 'md:col-span-2' : ''}`}>
-      <Label required={required}>{label}</Label>
+      <Label required={required} optional={optional}>{label}</Label>
       <select
         value={value || ''}
         onChange={(e) => onChange(e.target.value)}

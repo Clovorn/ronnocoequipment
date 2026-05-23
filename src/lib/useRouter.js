@@ -33,7 +33,9 @@ function parseRoute(hash) {
     case 'catalog':    return { name: 'catalog',    params: {} };
     case 'bundles':    return { name: 'bundles',    params: {} };
     case 'favorites':  return { name: 'favorites',  params: {} };
-    case 'deal':       return { name: 'deal',       params: {} };   // new-deal form
+    // Deal sheet — optional ?draft=<uuid> param hydrates an existing draft.
+    case 'deal':       return { name: 'deal',       params: { draftId: query.get('draft') || null } };
+    case 'my-deals':   return { name: 'my-deals',   params: {} };   // rep's own drafts + submissions
     case 'profile':    return { name: 'profile',    params: {} };   // user's own profile editor
     case 'faq':        return { name: 'faq',        params: { anchor: second || null } };
     case 'vendor':     return { name: 'vendor',     params: { slug: second || null } };
@@ -55,7 +57,8 @@ export function routeToHash(name, params = {}) {
     case 'catalog':    return '#/catalog';
     case 'bundles':    return '#/bundles';
     case 'favorites':  return '#/favorites';
-    case 'deal':       return '#/deal';
+    case 'deal':       return params.draftId ? `#/deal?draft=${params.draftId}` : '#/deal';
+    case 'my-deals':   return '#/my-deals';
     case 'profile':    return '#/profile';
     case 'faq':        return params.anchor ? `#/faq/${params.anchor}` : '#/faq';
     case 'vendors':    return '#/vendors';

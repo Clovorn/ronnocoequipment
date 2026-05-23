@@ -15,6 +15,7 @@ import FieldRequirementsAdmin from './components/admin/FieldRequirementsAdmin.js
 import HeroAdmin from './components/admin/HeroAdmin.jsx';
 import LookupListsAdmin from './components/admin/LookupListsAdmin.jsx';
 import DealBuilder from './components/DealBuilder.jsx';
+import MyDealsPage from './components/MyDealsPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import FaqPage from './components/FaqPage.jsx';
 import QuoteView from './components/QuoteView.jsx';
@@ -104,7 +105,20 @@ export default function App() {
       )}
 
       {route.name === 'deal' && (
-        <DealBuilder profile={profile} session={session} navigate={navigate} />
+        <DealBuilder
+          profile={profile}
+          session={session}
+          navigate={navigate}
+          draftId={route.params.draftId}
+        />
+      )}
+
+      {route.name === 'my-deals' && (
+        <MyDealsPage
+          profile={profile}
+          session={session}
+          navigate={navigate}
+        />
       )}
 
       {route.name === 'profile' && (

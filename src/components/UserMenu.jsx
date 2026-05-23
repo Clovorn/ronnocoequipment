@@ -115,6 +115,15 @@ export default function UserMenu({ profile, session, navigate, isAdmin }) {
 
           {/* Menu items */}
           <div className="py-1">
+            {/* My deals — rep's workspace for in-progress drafts and submitted
+                quotes/deals. Sits above the profile entry because it's a more
+                frequent destination than profile/password editing. */}
+            <MenuItem
+              icon={MyDealsGlyph}
+              label="My deals"
+              hint="Your drafts and submitted quotes"
+              onClick={() => go('my-deals')}
+            />
             <MenuItem
               icon={ProfileGlyph}
               label="My profile"
@@ -185,6 +194,16 @@ function ProfileGlyph() {
   return (
     <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
       <path strokeLinecap="round" strokeLinejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+    </svg>
+  );
+}
+function MyDealsGlyph() {
+  // Document with a folded corner + a small checkmark — reads as "your work in progress."
+  // Matches the line weight (1.8) and 24x24 viewBox of the other menu glyphs.
+  return (
+    <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M14 2v6h6M9 14l2 2 4-4" />
     </svg>
   );
 }

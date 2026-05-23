@@ -504,20 +504,77 @@ export const FAQ_SECTIONS = [
       { type: 'p', text: 'All further changes happen in the Deal Pipeline dashboard. To update contact info, add or remove equipment, change install date, or cancel — ask the leasing team. If you have access to the Pipeline dashboard yourself, edit there directly.' },
 
       { type: 'h3', text: 'Tracking deal progress' },
-      { type: 'p', text: 'The Deal Pipeline has its own dashboard showing every deal — submitted, in progress, approved, executed. If you have access, that\'s where to check status. Otherwise, the leasing team can update you by Deal ID.' },
+      { type: 'p', text: 'Two places to check: the **My deals** workspace (avatar → My deals) shows everything you\'ve submitted personally — drafts you\'re still working on, quotes waiting on the customer, and submitted deals. The **Deal Pipeline dashboard** is the leasing team\'s view across all reps. If you have access there, that\'s where to see deal status updates as the leasing team works through them. Otherwise, the leasing team can update you by Deal ID.' },
 
       { type: 'h3', text: 'Duplicate submissions' },
       { type: 'callout', tone: 'warning', text: 'The system doesn\'t auto-detect duplicates. If you submit the same deal twice by mistake (page failed to load → you re-clicked Submit), both appear in the pipeline. Contact the leasing team with both Deal IDs to merge or cancel. **To avoid:** after clicking Submit, wait for either the success screen or an error before doing anything else.' },
 
-      { type: 'h3', text: 'No partial drafts' },
-      { type: 'p', text: 'Deal Builder doesn\'t save partial drafts. If you close the browser tab halfway through, you lose your progress. This is intentional — gather your customer info offline before opening the deal sheet. A typical deal sheet takes 5-10 minutes if you have all the info ready.' },
+      { type: 'h3', text: 'Saving a draft if you can\'t finish in one sitting' },
+      { type: 'p', text: 'Next to the Submit button there\'s a **Save draft** button. Click it any time to store what you\'ve filled in so far. Your draft shows up in [My deals](#my-deals) — click Resume from there to pick up exactly where you left off, on the same device or a different one.' },
+      { type: 'p', text: 'When you eventually click Submit (quote or deal), the draft is deleted automatically — the form\'s contents have moved into the pipeline at that point, so the draft has done its job.' },
+    ],
+  },
+
+  // ────────────────────────────────────────────────────────────────────────
+  {
+    id: 'my-deals',
+    number: 9,
+    title: 'My deals workspace',
+    summary: 'Your in-progress drafts and your submitted quotes and deals — all in one place.',
+    blocks: [
+      { type: 'p', text: 'My deals is your personal workspace. It shows everything you\'ve been working on: drafts you saved but haven\'t submitted yet, plus every quote and deal you\'ve sent through the system.' },
+
+      { type: 'h3', text: 'How to get there' },
+      { type: 'p', text: 'Click your avatar in the top-right corner of the header. The user menu opens and **My deals** is at the top. Same path on mobile — tap your avatar.' },
+
+      { type: 'h3', text: 'What\'s in it' },
+      { type: 'p', text: 'Two sections, each independent:' },
+      { type: 'ul', items: [
+        '**Drafts** — deal sheets you saved without submitting. Resume any of them to keep working. Rename them so they\'re easier to recognize ("Smith\'s Deli — Chicago" is better than "Untitled draft"). Delete the ones you abandoned.',
+        '**Submitted** — every quote and direct-submit deal you\'ve created. Filter by All, Quotes, or Deals. Each row shows the customer, the store, the total, when you submitted it, and the current status.',
+      ]},
+
+      { type: 'h3', text: 'Drafts' },
+      { type: 'p', text: 'A draft is just the in-progress state of a deal sheet — every field you\'ve filled in, every piece of equipment you\'ve picked, your Quote-or-Deal mode choice, all of it. Drafts are stored per-user (only you see your own drafts) and are durable across devices, so a draft you save on your laptop is there when you sign in from your phone.' },
+      { type: 'p', text: 'Three actions per draft:' },
+      { type: 'ul', items: [
+        '**Resume** — opens the deal sheet hydrated with everything you had saved. From here you can edit, save again, or finally submit.',
+        '**Rename** — replaces the auto-generated name with whatever\'s easier for you to recognize.',
+        '**Delete** (trash icon) — removes it. Permanent. Use this for drafts that aren\'t going anywhere.',
+      ]},
+      { type: 'callout', tone: 'tip', text: 'Drafts default to the name "**Store name — City**" (or just "Untitled draft" if you haven\'t filled in the store yet). Save early, then rename it later when the store name is clearer.' },
+
+      { type: 'h3', text: 'Submitted' },
+      { type: 'p', text: 'This is your read-only history. Once you\'ve submitted a quote or a deal, you can\'t edit it from here — edits happen in the Deal Pipeline dashboard (that\'s the leasing team\'s view). What you CAN do:' },
+      { type: 'ul', items: [
+        '**Quotes** — click **Open quote** to view the customer-facing page (useful for spot-checking what the customer sees), or **Copy link** to drop the public URL into a follow-up email or text.',
+        '**Direct-submit deals** — view them in the Deal Pipeline dashboard. Ask your admin if you don\'t have access.',
+      ]},
+
+      { type: 'h3', text: 'Status badges' },
+      { type: 'p', text: 'Each submitted row carries a few small badges so you can scan the list fast:' },
+      { type: 'ul', items: [
+        '**Awaiting reply** (grey) — the customer hasn\'t responded yet',
+        '**Viewed** (green dot) — the customer has opened the quote page at least once',
+        '**Accepted (Lease)** / **Accepted (Finance)** / **Accepted (Purchase)** / **Accepted (Loan)** (green) — the customer decided and the leasing/ops team has been notified',
+        '**Declined** (red) — the customer passed',
+        '**Leasing** / **Operations** (grey) — current phase of a direct-submit deal',
+      ]},
+      { type: 'p', text: 'Customer decisions are recorded by you (or whoever handles the customer\'s reply) in the Deal Pipeline dashboard\'s Sales tab — once recorded, the badge here updates automatically.' },
+
+      { type: 'h3', text: 'What you can\'t do here (yet)' },
+      { type: 'ul', items: [
+        'Edit a submitted quote — that\'s the next thing on the roadmap. For now, send a new quote and ask the customer to use that one.',
+        'See other reps\' drafts or deals — by design, this view is scoped to you.',
+        'Bulk-delete drafts — one at a time only.',
+      ]},
     ],
   },
 
   // ────────────────────────────────────────────────────────────────────────
   {
     id: 'profile-and-account',
-    number: 9,
+    number: 10,
     title: 'Profile and account',
     summary: 'Changing your name, your password, and understanding roles.',
     blocks: [
@@ -571,7 +628,7 @@ export const FAQ_SECTIONS = [
   // ────────────────────────────────────────────────────────────────────────
   {
     id: 'troubleshooting',
-    number: 10,
+    number: 11,
     title: 'Troubleshooting',
     summary: 'Common issues and what to do about them.',
     blocks: [
