@@ -14,6 +14,7 @@ import VendorsAdmin from './components/admin/VendorsAdmin.jsx';
 import FieldRequirementsAdmin from './components/admin/FieldRequirementsAdmin.jsx';
 import HeroAdmin from './components/admin/HeroAdmin.jsx';
 import LookupListsAdmin from './components/admin/LookupListsAdmin.jsx';
+import UsersAdmin from './components/admin/UsersAdmin.jsx';
 import DealBuilder from './components/DealBuilder.jsx';
 import MyDealsPage from './components/MyDealsPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
@@ -51,9 +52,37 @@ export default function App() {
   if (!session) return <LoginScreen />;
 
   const role = profile?.role || 'sales';
-  const canEdit = role === 'admin' || role === 'director';
-  const isAdmin = canEdit;
+
+  // Permission split (v23):
+  //   canEditCatalog — write access to equipment, bundles, vendors, etc.
+  //                     ADMIN ONLY. Directors are sales-management, not catalog managers.
+  //   isAdmin        — full admin access including user management.
+  //                     ADMIN ONLY.
+  //   isManagerOrAdmin — can the user see/manage deals beyond their own?
+  //                     Directors (over their reps) + admins (everyone).
+  //                     Used by the pipeline dashboard, exposed here for any
+  //                     in-app screens that surface team-level data.
+  const canEditCatalog = role === 'admin';
+  const isAdmin = role === 'admin';
+  const isManagerOrAdmin = role === 'admin' || role === 'director';
   const userId = session.user.id;
+
+  // Inactive account guard. RLS on user_profiles already returns active rows
+  // for self-reads, so an inactive user gets profile = null (treated as sales
+  // default) BUT we should also surface a clear message here.
+  if (profile && profile.active === false) {
+    return (
+      <div className="min-h-screen flex items-center justify-center p-8 bg-page-50">
+        <div className="max-w-md bg-white border border-page-200 rounded-lg shadow-card p-8 text-center">
+          <RonnocoLogo variant="on-light" className="mb-6 mx-auto" />
+          <h1 className="text-xl font-medium text-slate-900 mb-3">Account inactive</h1>
+          <p className="text-sm text-slate-600 leading-relaxed mb-4">
+            Your account has been deactivated. Contact an administrator if this is unexpected.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   // Customer view — restricted, no catalog/vendor access
   if (role === 'customer') {
@@ -79,22 +108,22 @@ export default function App() {
       )}
 
       {route.name === 'catalog' && (
-        <CatalogBrowser canEdit={canEdit} role={role} userId={userId} />
+        <CatalogBrowser canEdit={canEditCatalog} role={role} userId={userId} />
       )}
 
       {route.name === 'bundles' && (
-        <BundlesBrowser canEdit={canEdit} />
+        <BundlesBrowser canEdit={canEditCatalog} />
       )}
 
       {route.name === 'favorites' && (
-        <CatalogBrowser canEdit={canEdit} role={role} userId={userId} favoritesOnly={true} />
+        <CatalogBrowser canEdit={canEditCatalog} role={role} userId={userId} favoritesOnly={true} />
       )}
 
       {route.name === 'vendor' && (
         <VendorPage
           slug={route.params.slug}
           navigate={navigate}
-          canEdit={canEdit}
+          canEdit={canEditCatalog}
           role={role}
           userId={userId}
         />
@@ -155,6 +184,9 @@ export default function App() {
           )}
           {route.params.section === 'field-requirements' && (
             <FieldRequirementsAdmin onBack={() => navigate('admin')} />
+          )}
+          {route.params.section === 'users' && (
+            <UsersAdmin onBack={() => navigate('admin')} currentUserId={userId} />
           )}
         </>
       )}
