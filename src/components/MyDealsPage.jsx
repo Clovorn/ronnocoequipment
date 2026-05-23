@@ -1,6 +1,12 @@
 import { useEffect, useState } from 'react';
 import { listMyDrafts, deleteDraft, renameDraft } from '../lib/draftStorage.js';
-import { fetchMyDeals, isDealPipelineConfigured } from '../lib/dealPipeline.js';
+import {
+  fetchMyDeals,
+  fetchDealById,
+  recordCustomerDecision,
+  isDealPipelineConfigured,
+} from '../lib/dealPipeline.js';
+import { DECISIONS, getStepStatuses, isTerminalDenial, PHASE_LABELS, STEP_LABELS } from '../lib/pipelineSteps.js';
 
 /**
  * MyDealsPage — the rep's personal workspace.
@@ -15,8 +21,14 @@ import { fetchMyDeals, isDealPipelineConfigured } from '../lib/dealPipeline.js';
  *   2. **Submitted** — rows from the pipeline DB's `deals` table, filtered
  *      by `sales_rep_email = session.user.email` (the rep stamps that on
  *      every submission so we can find their work later). Includes both
- *      quotes and direct-submit deals. Actions: Open quote (public URL),
- *      Copy quote link, or for direct deals, "View in Pipeline".
+ *      quotes and direct-submit deals. Each row expands inline to show a
+ *      detail panel:
+ *        - Customer + store + equipment summary
+ *        - Visual phase stepper (read-only) for the current process flow
+ *        - For QUOTES (is_quote=true): Edit & re-send button + customer
+ *          decision recorder (Lease/Finance/Purchase/Loan/Declined)
+ *        - For DEALS (is_quote=false): read-only stepper, link to the
+ *          Pipeline dashboard for anything beyond viewing
  *
  * The two sources are queried in parallel on mount. Each section renders
  * independently — a slow/failed pipeline query doesn't block the drafts
@@ -37,6 +49,10 @@ export default function MyDealsPage({ profile, session, navigate }) {
   // Filter for the submissions section: 'all' | 'quote' | 'deal'.
   // Default 'all' so a rep landing here sees everything; they can narrow.
   const [submissionsFilter, setSubmissionsFilter] = useState('all');
+
+  // Which submission row is currently expanded (deal id). Only one open at
+  // a time — clicking another row closes the previous one. null = none open.
+  const [expandedId, setExpandedId] = useState(null);
 
   /**
    * Load both sections on mount and whenever the user changes (rare, but
@@ -66,10 +82,29 @@ export default function MyDealsPage({ profile, session, navigate }) {
     return () => { cancelled = true; };
   }, [session?.user?.email]);
 
+  /**
+   * Refresh a single submission row in place — used after the rep records a
+   * customer decision so the row's badges + stepper update without re-fetching
+   * the whole list (which would also blow away the expanded state).
+   */
+  async function refreshSubmission(dealId) {
+    const { data, error } = await fetchDealById(dealId);
+    if (error || !data) return;
+    setSubmissions((prev) => prev.map((row) => (row.id === dealId ? { ...row, ...data } : row)));
+  }
+
   /* ─── Action handlers ─── */
 
   function handleResume(draftId) {
     navigate('deal', { draftId });
+  }
+
+  function handleEditQuote(dealId) {
+    navigate('deal', { editQuoteId: dealId });
+  }
+
+  function handleToggleExpand(dealId) {
+    setExpandedId((prev) => (prev === dealId ? null : dealId));
   }
 
   async function handleDelete(draft) {
@@ -98,6 +133,33 @@ export default function MyDealsPage({ profile, session, navigate }) {
       return;
     }
     setDrafts((prev) => prev.map((d) => (d.id === draft.id ? data : d)));
+  }
+
+  /**
+   * Submit a customer decision for a quote. Wires the DECISIONS spec
+   * through recordCustomerDecision (which handles the column updates and
+   * audit log) and refreshes the row when done.
+   */
+  async function handleDecision(row, decisionValue, notes) {
+    const decision = DECISIONS.find((d) => d.value === decisionValue);
+    if (!decision) {
+      window.alert(`Unknown decision: ${decisionValue}`);
+      return { error: 'unknown decision' };
+    }
+    const actor = profile?.display_name || session?.user?.email || 'rep';
+    const { data, error } = await recordCustomerDecision({
+      dealId: row.id,
+      decision,
+      notes: notes || null,
+      actor,
+      currentRevision: row.quote_revision || 1,
+    });
+    if (error) {
+      window.alert(`Could not record decision: ${error.message}`);
+      return { error };
+    }
+    await refreshSubmission(row.id);
+    return { data };
   }
 
   /* ─── Render ─── */
@@ -141,6 +203,10 @@ export default function MyDealsPage({ profile, session, navigate }) {
         filter={submissionsFilter}
         onFilterChange={setSubmissionsFilter}
         configured={isDealPipelineConfigured}
+        expandedId={expandedId}
+        onToggleExpand={handleToggleExpand}
+        onEditQuote={handleEditQuote}
+        onDecision={handleDecision}
       />
     </div>
   );
@@ -282,7 +348,7 @@ function DraftRow({ draft, onResume, onDelete, onRename }) {
 
 /* ───────────────────────── Submissions section ───────────────────────── */
 
-function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilterChange, configured }) {
+function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilterChange, configured, expandedId, onToggleExpand, onEditQuote, onDecision }) {
   // Counts for the filter pills come from totalCount (unfiltered) so the
   // numbers don't shift as the rep flips between filters.
   return (
@@ -329,7 +395,14 @@ function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilter
         ) : (
           <ul className="space-y-2">
             {rows.map((row) => (
-              <SubmissionRow key={row.id} row={row} />
+              <SubmissionRow
+                key={row.id}
+                row={row}
+                expanded={expandedId === row.id}
+                onToggle={() => onToggleExpand(row.id)}
+                onEditQuote={onEditQuote}
+                onDecision={onDecision}
+              />
             ))}
           </ul>
         )}
@@ -354,7 +427,7 @@ function EmptySubmissionsState() {
   );
 }
 
-function SubmissionRow({ row }) {
+function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision }) {
   const isQuote = row.is_quote === true;
   const createdRelative = formatRelativeTime(row.created_at);
   const customerName =
@@ -365,55 +438,259 @@ function SubmissionRow({ row }) {
   const totalDisplay = row.total_eq_cost || '';
 
   return (
-    <li className="bg-page-50 border border-page-200 rounded p-3 md:p-4 hover:border-navy-300 transition-colors">
-      <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 mb-1 flex-wrap">
-            <TypePill isQuote={isQuote} />
-            {isQuote && row.quote_number && (
-              <span className="text-[11px] font-mono font-medium text-slate-700">
-                {row.quote_number}
-              </span>
-            )}
-            {isQuote && <QuoteDecisionPill decision={row.customer_decision} />}
-            {!isQuote && row.phase && <PhasePill phase={row.phase} />}
-            {isQuote && row.quote_first_viewed_at && (
-              <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-medium text-slate-500"
-                    title={`First viewed ${new Date(row.quote_first_viewed_at).toLocaleString()}`}>
-                <span className="w-1.5 h-1.5 rounded-full bg-ok" />
-                Viewed
-              </span>
-            )}
+    <li className={`bg-page-50 border rounded transition-colors overflow-hidden
+                    ${expanded ? 'border-navy-400 shadow-sm' : 'border-page-200 hover:border-navy-300'}`}>
+      {/* Header — clickable to toggle expansion. The whole row is the
+          target (not just a chevron) so the touch surface is generous. */}
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full text-left p-3 md:p-4 cursor-pointer hover:bg-page-100/40 transition-colors"
+        aria-expanded={expanded}
+      >
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 mb-1 flex-wrap">
+              <TypePill isQuote={isQuote} />
+              {isQuote && row.quote_number && (
+                <span className="text-[11px] font-mono font-medium text-slate-700">
+                  {row.quote_number}
+                  {row.quote_revision > 1 && (
+                    <span className="text-slate-400 font-normal"> · rev {row.quote_revision}</span>
+                  )}
+                </span>
+              )}
+              {isQuote && <QuoteDecisionPill decision={row.customer_decision} />}
+              {!isQuote && row.phase && <PhasePill phase={row.phase} />}
+              {!isQuote && row.current_step && <StepPill step={row.current_step} />}
+              {isQuote && row.quote_first_viewed_at && (
+                <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-medium text-slate-500"
+                      title={`First viewed ${new Date(row.quote_first_viewed_at).toLocaleString()}`}>
+                  <span className="w-1.5 h-1.5 rounded-full bg-ok" />
+                  Viewed
+                </span>
+              )}
+            </div>
+            <h3 className="text-sm md:text-base font-medium text-slate-900 truncate">
+              {row.store_name || customerName}
+            </h3>
+            <div className="text-xs text-slate-500 flex items-center gap-2 flex-wrap mt-0.5">
+              <span>{customerName}</span>
+              {location && <><span>·</span><span>{location}</span></>}
+              {totalDisplay && <><span>·</span><span className="font-mono">{totalDisplay}</span></>}
+              <span>·</span>
+              <span>Submitted {createdRelative}</span>
+            </div>
           </div>
-          <h3 className="text-sm md:text-base font-medium text-slate-900 truncate">
-            {row.store_name || customerName}
-          </h3>
-          <div className="text-xs text-slate-500 flex items-center gap-2 flex-wrap mt-0.5">
-            <span>{customerName}</span>
-            {location && <><span>·</span><span>{location}</span></>}
-            {totalDisplay && <><span>·</span><span className="font-mono">{totalDisplay}</span></>}
-            <span>·</span>
-            <span>Submitted {createdRelative}</span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
-          {isQuote && row.quote_number && row.quote_token && (
-            <SubmissionActions row={row} />
-          )}
-          {!isQuote && (
-            <span className="text-[11px] text-slate-500 italic max-w-[10rem] text-right">
-              View in Pipeline dashboard
+          <div className="flex items-center gap-1 flex-shrink-0 text-slate-400">
+            <span className="text-[10px] uppercase tracking-wider font-medium">
+              {expanded ? 'Hide' : 'Details'}
             </span>
-          )}
+            <svg
+              className={`w-4 h-4 transition-transform ${expanded ? 'rotate-180' : ''}`}
+              fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
+            >
+              <path strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
+            </svg>
+          </div>
         </div>
-      </div>
+      </button>
+
+      {/* Detail panel — rendered only when expanded. Border-top creates a
+          visual seam between the header and the panel. */}
+      {expanded && (
+        <div className="border-t border-page-200 bg-white">
+          <SubmissionDetail
+            row={row}
+            isQuote={isQuote}
+            onEditQuote={onEditQuote}
+            onDecision={onDecision}
+          />
+        </div>
+      )}
     </li>
   );
 }
 
-function SubmissionActions({ row }) {
+/* ───────────────────────── Detail panel ───────────────────────── */
+
+/**
+ * The inline detail view shown when a submission row is expanded. Renders:
+ *   - Customer info card (contact + store + address)
+ *   - Equipment summary (from raw_csv.equipment_items if present, else the
+ *     equipment_selection text blob)
+ *   - Visual stepper for the current phase (read-only)
+ *   - For quotes: edit button, copy-link/open-quote actions, customer
+ *     decision form
+ *   - For deals: a small note pointing reps to the Pipeline dashboard for
+ *     any further edits
+ */
+function SubmissionDetail({ row, isQuote, onEditQuote, onDecision }) {
+  const customerName =
+    row.contact_name ||
+    [row.first_name, row.last_name].filter(Boolean).join(' ') ||
+    '(no name)';
+  const fullAddress = [row.address, row.city, row.state, row.zip_code].filter(Boolean).join(', ');
+  // equipment_items lives in raw_csv per the submit-time snapshot
+  const equipmentItems = Array.isArray(row.raw_csv?.equipment_items)
+    ? row.raw_csv.equipment_items
+    : [];
+
+  return (
+    <div className="p-4 md:p-5 space-y-5">
+      {/* Phase stepper — only render when phase is in {leasing, ops}. Sales-
+          phase quotes don't need a stepper (there's only one step). */}
+      {(row.phase === 'leasing' || row.phase === 'ops') && (
+        <div>
+          <SectionLabel>
+            {PHASE_LABELS[row.phase] || row.phase} Progress
+            {isTerminalDenial(row.current_step) && (
+              <span className="ml-2 text-[10px] uppercase tracking-wider font-bold text-bad">
+                · Credit Denied
+              </span>
+            )}
+          </SectionLabel>
+          <PhaseStepper phase={row.phase} currentStep={row.current_step} />
+        </div>
+      )}
+
+      {/* Sales phase + quote — show a small notice instead of a stepper */}
+      {row.phase === 'sales' && isQuote && (
+        <div className="bg-accent-500/5 border border-accent-500/30 rounded p-3 text-xs text-slate-700">
+          <div className="font-medium text-slate-900 mb-0.5">Quote sent — awaiting customer decision</div>
+          Once the customer responds, record their decision below. That moves the deal forward into Financing or Operations.
+        </div>
+      )}
+
+      {/* Customer + store grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <DetailCard title="Customer">
+          <DetailField label="Name" value={customerName} />
+          {row.contact_email && <DetailField label="Email" value={row.contact_email} mono />}
+          {(row.contact_cell || row.phone) && <DetailField label="Phone" value={row.contact_cell || row.phone} mono />}
+        </DetailCard>
+        <DetailCard title="Store">
+          <DetailField label="Name" value={row.store_name || '—'} />
+          {fullAddress && <DetailField label="Address" value={fullAddress} />}
+          {row.deal_type && <DetailField label="Deal type" value={row.deal_type} />}
+        </DetailCard>
+      </div>
+
+      {/* Equipment */}
+      <div>
+        <SectionLabel>
+          Equipment
+          {equipmentItems.length > 0 && (
+            <span className="ml-1 text-slate-400 font-normal text-[10px]">
+              · {equipmentItems.length} item{equipmentItems.length === 1 ? '' : 's'}
+            </span>
+          )}
+          {row.total_eq_cost && (
+            <span className="ml-2 text-slate-500 font-mono text-[11px]">
+              {row.total_eq_cost}
+            </span>
+          )}
+        </SectionLabel>
+        {equipmentItems.length > 0 ? (
+          <ul className="space-y-1 text-xs">
+            {equipmentItems.map((item, idx) => (
+              <li key={idx} className="flex items-center justify-between gap-2 bg-page-50 px-3 py-1.5 rounded border border-page-200">
+                <span className="min-w-0 flex-1 truncate">
+                  <span className="font-medium text-slate-700">{item.quantity}×</span>{' '}
+                  <span className="text-slate-700">{item.description}</span>
+                  {item.model && <span className="text-slate-400"> ({item.model})</span>}
+                </span>
+                <span className="text-slate-500 font-mono whitespace-nowrap">
+                  ${((item.list_price || 0) * (item.quantity || 1)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                </span>
+              </li>
+            ))}
+          </ul>
+        ) : row.equipment_selection ? (
+          <pre className="text-xs text-slate-700 whitespace-pre-wrap bg-page-50 border border-page-200 rounded p-3 font-mono">
+            {row.equipment_selection}
+          </pre>
+        ) : (
+          <div className="text-xs text-slate-500 italic">No equipment recorded.</div>
+        )}
+      </div>
+
+      {/* Actions — different for quotes vs deals */}
+      {isQuote ? (
+        <QuoteActions row={row} onEditQuote={onEditQuote} onDecision={onDecision} />
+      ) : (
+        <DealActions row={row} />
+      )}
+    </div>
+  );
+}
+
+/* ───────────────────────── Stepper ───────────────────────── */
+
+/**
+ * Horizontal stepper showing every step in the phase's sequence, with the
+ * current step highlighted. Read-only — the rep can see where the deal is
+ * but can't advance it from here (that happens in the Pipeline dashboard).
+ *
+ * On mobile (< md breakpoint), wraps to multiple lines so labels stay
+ * readable. On desktop, all steps fit on one row with connector lines.
+ */
+function PhaseStepper({ phase, currentStep }) {
+  const statuses = getStepStatuses(phase, currentStep);
+  if (statuses.length === 0) {
+    return <div className="text-xs text-slate-500 italic">No phase steps to show.</div>;
+  }
+
+  return (
+    <ol className="flex flex-wrap items-stretch gap-x-1 gap-y-3 md:gap-y-0">
+      {statuses.map((step, idx) => (
+        <li key={step.key} className="flex items-stretch min-w-0">
+          <StepperNode label={step.label} status={step.status} />
+          {idx < statuses.length - 1 && (
+            <div className="hidden md:flex items-center px-1">
+              <div className={`h-px w-6
+                              ${step.status === 'past' ? 'bg-navy-700' : 'bg-page-300'}`} />
+            </div>
+          )}
+        </li>
+      ))}
+    </ol>
+  );
+}
+
+function StepperNode({ label, status }) {
+  const isPast    = status === 'past';
+  const isCurrent = status === 'current';
+  return (
+    <div className={`flex items-center gap-2 px-2.5 py-1.5 rounded-full text-[11px] font-medium whitespace-nowrap
+                    ${isCurrent ? 'bg-navy-900 text-chalk-50 ring-1 ring-navy-900' :
+                      isPast    ? 'bg-ok/10 text-ok' :
+                                  'bg-white border border-page-200 text-slate-500'}`}>
+      <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[10px]
+                       ${isCurrent ? 'bg-chalk-50/20' : isPast ? 'bg-ok/20' : 'bg-page-100'}`}>
+        {isPast ? (
+          <svg className="w-2.5 h-2.5" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="m5 13 4 4L19 7" />
+          </svg>
+        ) : isCurrent ? (
+          <span className="w-1.5 h-1.5 rounded-full bg-chalk-50" />
+        ) : null}
+      </span>
+      {label}
+    </div>
+  );
+}
+
+/* ───────────────────────── Quote actions + decision form ───────────────────────── */
+
+function QuoteActions({ row, onEditQuote, onDecision }) {
   const url = buildQuoteUrl(row.quote_number, row.quote_token);
   const [copied, setCopied] = useState(false);
+
+  // Only render the decision form when no decision has been recorded yet.
+  // Once a decision exists, the deal has moved phases; further changes
+  // happen in the Pipeline dashboard, not here.
+  const showDecisionForm = !row.customer_decision || row.customer_decision === 'pending';
 
   function copyLink() {
     navigator.clipboard?.writeText(url).then(() => {
@@ -423,25 +700,236 @@ function SubmissionActions({ row }) {
   }
 
   return (
-    <>
+    <div className="space-y-4">
+      {/* Action buttons row */}
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => onEditQuote(row.id)}
+          className="px-3 py-1.5 bg-navy-900 text-chalk-50 text-xs font-medium rounded
+                     hover:bg-navy-800 transition-colors whitespace-nowrap inline-flex items-center gap-1.5"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5m-1.414-9.414a2 2 0 1 1 2.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+          Edit & re-send
+        </button>
+        <a
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="px-3 py-1.5 border border-page-300 bg-white text-slate-700 text-xs font-medium rounded
+                     hover:bg-page-50 hover:border-navy-300 transition-colors whitespace-nowrap inline-flex items-center gap-1.5"
+        >
+          <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-4M14 4h6m0 0v6m0-6L10 14" />
+          </svg>
+          Open quote page
+        </a>
+        <button
+          onClick={copyLink}
+          className="px-3 py-1.5 border border-page-300 bg-white text-slate-700 text-xs font-medium rounded
+                     hover:bg-page-50 hover:border-navy-300 transition-colors whitespace-nowrap"
+          title="Copy customer-facing quote link"
+        >
+          {copied ? '✓ Link copied' : 'Copy link'}
+        </button>
+      </div>
+
+      {/* Cover note (if any) — useful context when deciding what to edit */}
+      {row.quote_cover_note && (
+        <div className="bg-page-50 border border-page-200 rounded p-3">
+          <SectionLabel>Cover note to customer</SectionLabel>
+          <p className="text-xs text-slate-700 whitespace-pre-wrap">{row.quote_cover_note}</p>
+        </div>
+      )}
+
+      {/* Decision form OR decision summary */}
+      {showDecisionForm ? (
+        <DecisionForm row={row} onDecision={onDecision} />
+      ) : (
+        <DecisionSummary row={row} />
+      )}
+    </div>
+  );
+}
+
+/**
+ * Form for recording the customer's reply to the quote. The rep picks one
+ * of the standard outcomes; on submit we update the deal and advance the
+ * phase per the DECISIONS table's rules.
+ *
+ * Local state captures the selection so the rep can review before clicking
+ * Save — accidentally clicking "Declined" and losing the quote would be
+ * a frustrating mistake.
+ */
+function DecisionForm({ row, onDecision }) {
+  const [selected, setSelected] = useState('');
+  const [notes, setNotes] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  async function handleSave() {
+    if (!selected) return;
+    const decision = DECISIONS.find((d) => d.value === selected);
+    const confirmMsg = decision.closed
+      ? `Mark this quote as Declined? The deal will be closed and can't be reopened from here.`
+      : `Record ${decision.label}? The deal will move into ${decision.nextPhase} phase.`;
+    if (!window.confirm(confirmMsg)) return;
+    setSaving(true);
+    const { error } = await onDecision(row, selected, notes.trim() || null);
+    setSaving(false);
+    if (!error) {
+      setSelected('');
+      setNotes('');
+    }
+  }
+
+  return (
+    <div className="bg-page-50 border border-page-200 rounded p-3 md:p-4">
+      <SectionLabel>Record customer decision</SectionLabel>
+      <p className="text-xs text-slate-600 mb-3">
+        When the customer replies to your quote, log their response here. The deal will
+        automatically advance into the appropriate phase.
+      </p>
+
+      <div className="space-y-2 mb-3">
+        {DECISIONS.map((d) => (
+          <label key={d.value}
+                 className={`flex items-start gap-3 p-2 rounded cursor-pointer border transition-colors
+                            ${selected === d.value
+                              ? 'border-navy-600 bg-white'
+                              : 'border-page-200 bg-white hover:border-navy-300'}`}>
+            <input
+              type="radio"
+              name={`decision-${row.id}`}
+              value={d.value}
+              checked={selected === d.value}
+              onChange={(e) => setSelected(e.target.value)}
+              className="mt-0.5 accent-navy-700"
+            />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-medium text-slate-900">{d.label}</div>
+              <div className="text-[11px] text-slate-500">
+                {d.closed
+                  ? 'Deal closed — customer is not moving forward'
+                  : `Moves to ${PHASE_LABELS[d.nextPhase] || d.nextPhase} phase (${STEP_LABELS[d.nextStep] || d.nextStep})`}
+              </div>
+            </div>
+          </label>
+        ))}
+      </div>
+
+      <label className="block mb-3">
+        <span className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1 font-semibold">
+          Notes <span className="text-slate-400 font-normal normal-case tracking-normal">(optional)</span>
+        </span>
+        <textarea
+          value={notes}
+          onChange={(e) => setNotes(e.target.value)}
+          rows={2}
+          placeholder="e.g. Customer wants to delay install until next month."
+          className="w-full px-3 py-2 bg-white border border-page-200 rounded text-sm
+                     focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10
+                     focus:outline-none transition-colors resize-y"
+        />
+      </label>
+
       <button
-        onClick={copyLink}
-        className="px-3 py-1.5 text-xs text-slate-600 hover:text-navy-900
-                   hover:bg-page-100 rounded border border-page-200 transition-colors whitespace-nowrap"
-        title="Copy customer-facing quote link"
+        onClick={handleSave}
+        disabled={!selected || saving}
+        className="px-4 py-2 bg-navy-900 text-chalk-50 text-sm font-medium rounded
+                   hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
+                   transition-colors"
       >
-        {copied ? '✓ Copied' : 'Copy link'}
+        {saving ? 'Saving…' : 'Save decision'}
       </button>
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="px-3 py-1.5 bg-navy-900 text-chalk-50 text-xs font-medium rounded
-                   hover:bg-navy-800 transition-colors whitespace-nowrap"
-      >
-        Open quote
-      </a>
-    </>
+    </div>
+  );
+}
+
+/**
+ * Read-only summary shown once a decision has been recorded. The decision
+ * itself is in the row's status pill at the top of the row, but the notes
+ * and timestamp belong here.
+ */
+function DecisionSummary({ row }) {
+  const decision = DECISIONS.find((d) => d.value === row.customer_decision);
+  if (!decision) return null;
+  const when = row.customer_decision_at
+    ? new Date(row.customer_decision_at).toLocaleString()
+    : 'recently';
+  return (
+    <div className="bg-page-50 border border-page-200 rounded p-3">
+      <SectionLabel>Customer decision</SectionLabel>
+      <div className="text-sm text-slate-900 font-medium">{decision.label}</div>
+      <div className="text-[11px] text-slate-500 mt-0.5">Recorded {when}</div>
+      {row.customer_decision_notes && (
+        <p className="text-xs text-slate-700 mt-2 whitespace-pre-wrap">
+          {row.customer_decision_notes}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/* ───────────────────────── Deal actions (read-only) ───────────────────────── */
+
+function DealActions({ row }) {
+  return (
+    <div className="bg-page-50 border border-page-200 rounded p-3 text-xs text-slate-600">
+      <div className="flex items-start gap-2">
+        <svg className="w-4 h-4 text-slate-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <div>
+          <div className="font-medium text-slate-900 mb-0.5">View-only here</div>
+          This deal is now in the leasing/operations team's hands. To update phase, advance steps,
+          edit equipment, or close out the deal, use the Deal Pipeline dashboard — your admin can
+          give you access if you don't have it yet.
+          {row.id && (
+            <div className="mt-2 text-[11px] text-slate-500 font-mono">Deal ID: {row.id}</div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ───────────────────────── Small primitives ───────────────────────── */
+
+function SectionLabel({ children }) {
+  return (
+    <div className="text-[10px] uppercase tracking-wider text-slate-500 mb-1.5 font-bold">
+      {children}
+    </div>
+  );
+}
+
+function DetailCard({ title, children }) {
+  return (
+    <div className="bg-page-50 border border-page-200 rounded p-3">
+      <SectionLabel>{title}</SectionLabel>
+      <div className="space-y-1">{children}</div>
+    </div>
+  );
+}
+
+function DetailField({ label, value, mono }) {
+  return (
+    <div className="flex items-baseline gap-2 text-xs">
+      <span className="text-slate-500 min-w-[4rem]">{label}:</span>
+      <span className={`text-slate-900 min-w-0 flex-1 break-words ${mono ? 'font-mono' : ''}`}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function StepPill({ step }) {
+  return (
+    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-medium
+                     bg-slate-100 text-slate-700">
+      {STEP_LABELS[step] || step}
+    </span>
   );
 }
 

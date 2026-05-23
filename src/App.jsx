@@ -110,6 +110,7 @@ export default function App() {
           session={session}
           navigate={navigate}
           draftId={route.params.draftId}
+          editQuoteId={route.params.editQuoteId}
         />
       )}
 

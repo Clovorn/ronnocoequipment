@@ -33,8 +33,11 @@ function parseRoute(hash) {
     case 'catalog':    return { name: 'catalog',    params: {} };
     case 'bundles':    return { name: 'bundles',    params: {} };
     case 'favorites':  return { name: 'favorites',  params: {} };
-    // Deal sheet — optional ?draft=<uuid> param hydrates an existing draft.
-    case 'deal':       return { name: 'deal',       params: { draftId: query.get('draft') || null } };
+    // Deal sheet — optional ?draft=<uuid> hydrates an in-progress draft,
+    // optional ?edit=<uuid> hydrates a previously-sent quote for re-sending.
+    // The two are mutually exclusive in practice; if both are present, edit
+    // wins (since you can't be drafting AND editing simultaneously).
+    case 'deal':       return { name: 'deal',       params: { draftId: query.get('draft') || null, editQuoteId: query.get('edit') || null } };
     case 'my-deals':   return { name: 'my-deals',   params: {} };   // rep's own drafts + submissions
     case 'profile':    return { name: 'profile',    params: {} };   // user's own profile editor
     case 'faq':        return { name: 'faq',        params: { anchor: second || null } };
@@ -57,7 +60,12 @@ export function routeToHash(name, params = {}) {
     case 'catalog':    return '#/catalog';
     case 'bundles':    return '#/bundles';
     case 'favorites':  return '#/favorites';
-    case 'deal':       return params.draftId ? `#/deal?draft=${params.draftId}` : '#/deal';
+    case 'deal':       {
+      // edit takes precedence over draft (can't do both at once)
+      if (params.editQuoteId) return `#/deal?edit=${params.editQuoteId}`;
+      if (params.draftId)     return `#/deal?draft=${params.draftId}`;
+      return '#/deal';
+    }
     case 'my-deals':   return '#/my-deals';
     case 'profile':    return '#/profile';
     case 'faq':        return params.anchor ? `#/faq/${params.anchor}` : '#/faq';

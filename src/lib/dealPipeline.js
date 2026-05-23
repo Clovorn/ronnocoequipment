@@ -195,3 +195,174 @@ export async function logDealActivity(dealId, action, detail, actor) {
     console.warn('Could not log deal activity:', err);
   }
 }
+
+/**
+ * Fetch the full deal record for the My Deals detail view and the quote
+ * editor. Selects every column we might display, including the raw_csv
+ * snapshot which holds the structured equipment array.
+ *
+ * RLS on the pipeline DB is currently permissive (anon can read everything);
+ * this function doesn't add a sales_rep_email filter because the row was
+ * already retrieved with that filter in fetchMyDeals — the rep is just
+ * drilling into a row they already saw. If the pipeline DB ever gets
+ * proper RLS, we'd add the filter here too.
+ */
+export async function fetchDealById(dealId) {
+  if (!dealPipeline) {
+    return { data: null, error: { message: 'Deal pipeline not configured.' } };
+  }
+  if (!dealId) {
+    return { data: null, error: { message: 'Missing deal id.' } };
+  }
+  const { data, error } = await dealPipeline
+    .from('deals')
+    .select('*')
+    .eq('id', dealId)
+    .maybeSingle();
+  return { data, error };
+}
+
+/**
+ * Update an existing quote in the pipeline and bump its revision counter.
+ *
+ * This is called by the "Re-send quote" flow in DealBuilder when editing a
+ * previously-sent quote. The pipeline `deals` row stays in place — we
+ * UPDATE it rather than INSERT a new row — so the customer's saved URL
+ * (which embeds quote_number + quote_token) keeps working and now shows
+ * the new contents.
+ *
+ * Returns { data: <updated row>, error }. The caller is responsible for
+ * inserting the deal_revisions audit row separately (via logDealRevision)
+ * and re-opening mailto: — we keep those side-effects out of this helper
+ * so it stays a pure UPDATE.
+ */
+export async function updateQuote(dealId, patch) {
+  if (!dealPipeline) {
+    return { data: null, error: { message: 'Deal pipeline not configured.' } };
+  }
+  const now = new Date().toISOString();
+  const { data, error } = await dealPipeline
+    .from('deals')
+    .update({
+      ...patch,
+      quote_last_sent_at: now,
+      updated_at: now,
+    })
+    .eq('id', dealId)
+    .select()
+    .single();
+  return { data, error };
+}
+
+/**
+ * Record an entry in deal_revisions. Used after a quote edit/re-send and
+ * after a customer-decision update so there's a complete audit trail of
+ * every meaningful change to a deal.
+ *
+ * `diff` is freeform jsonb — callers can put whatever shape makes sense
+ * for the change kind:
+ *   - quote_edit: { equipment_changed: bool, cover_note_changed: bool, ... }
+ *   - decision:   { from: 'pending', to: 'lease', phase_advanced: 'leasing' }
+ *
+ * Best-effort: failures are logged but not raised, since the underlying
+ * change has already been persisted by the time we call this.
+ */
+export async function logDealRevision({ dealId, revision, changedBy, changeKind, diff, notes }) {
+  if (!dealPipeline) return { error: { message: 'Not configured.' } };
+  try {
+    const { error } = await dealPipeline
+      .from('deal_revisions')
+      .insert({
+        deal_id: dealId,
+        revision,
+        changed_by: changedBy,
+        change_kind: changeKind,
+        diff: diff || {},
+        notes: notes || null,
+      });
+    if (error) console.warn('Could not log deal revision:', error);
+    return { error };
+  } catch (err) {
+    console.warn('logDealRevision threw:', err);
+    return { error: { message: err.message } };
+  }
+}
+
+/**
+ * Record the customer's decision on a quote and advance the deal's phase
+ * accordingly. Wraps three pipeline writes into one helper so the caller
+ * (MyDealsPage) doesn't have to coordinate them:
+ *
+ *   1. UPDATE deals SET customer_decision, customer_decision_at,
+ *      customer_decision_notes, phase, current_step, is_quote=false,
+ *      deal_status (closed if declined)
+ *   2. INSERT deal_revisions row (change_kind='decision', diff has from/to)
+ *   3. INSERT deal_activity row (human-readable for the dashboard's activity feed)
+ *
+ * The `decision` arg is one of the DECISIONS entries from pipelineSteps.js —
+ * its nextPhase/nextStep/closed fields drive the column updates.
+ *
+ * Note that `is_quote` flips to false here: once the customer has decided,
+ * this row is no longer a "quote pending response" — it's a deal moving
+ * through the pipeline. The customer-facing quote URL still works (it
+ * matches on quote_number + quote_token without checking is_quote), so
+ * the customer can still see what they decided on.
+ */
+export async function recordCustomerDecision({ dealId, decision, notes, actor, currentRevision }) {
+  if (!dealPipeline) {
+    return { data: null, error: { message: 'Deal pipeline not configured.' } };
+  }
+  const now = new Date().toISOString();
+
+  // Build the column patch from the decision spec.
+  const patch = {
+    customer_decision: decision.value,
+    customer_decision_at: now,
+    customer_decision_notes: notes || null,
+    is_quote: false,        // no longer a pending quote
+    updated_at: now,
+  };
+  if (decision.nextPhase) {
+    patch.phase = decision.nextPhase;
+    patch.current_step = decision.nextStep;
+  }
+  if (decision.closed) {
+    patch.deal_status = 'closed';
+  }
+
+  // 1) Update the deal
+  const { data: updated, error: updErr } = await dealPipeline
+    .from('deals')
+    .update(patch)
+    .eq('id', dealId)
+    .select()
+    .single();
+  if (updErr) return { data: null, error: updErr };
+
+  // 2) Audit log — separate from activity feed; this is the structured trail
+  await logDealRevision({
+    dealId,
+    revision: (currentRevision || 0) + 1,
+    changedBy: actor,
+    changeKind: 'decision',
+    diff: {
+      decision: decision.value,
+      next_phase: decision.nextPhase,
+      next_step: decision.nextStep,
+      closed: !!decision.closed,
+    },
+    notes,
+  });
+
+  // 3) Human-readable activity feed entry — what the dashboard shows
+  await logDealActivity(
+    dealId,
+    `Customer decision: ${decision.label}`,
+    decision.nextPhase
+      ? `Deal advanced to ${decision.nextPhase} phase (${decision.nextStep})`
+      : 'Deal marked closed',
+    actor,
+  );
+
+  return { data: updated, error: null };
+}

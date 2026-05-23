@@ -1,5 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
-import { submitDealToPipeline, logDealActivity, isDealPipelineConfigured, generateQuoteNumber } from '../lib/dealPipeline.js';
+import {
+  submitDealToPipeline, logDealActivity, isDealPipelineConfigured, generateQuoteNumber,
+  fetchDealById, updateQuote, logDealRevision,
+} from '../lib/dealPipeline.js';
 import { fetchDraft, insertDraft, updateDraft, deleteDraft, defaultDraftName } from '../lib/draftStorage.js';
 import { LEASE_MIN_PRICE, LEASE_RATE } from '../lib/leasing.js';
 import { useLookupList } from '../lib/useLookupList.js';
@@ -111,9 +114,137 @@ function makeBlankDraft(profile, session) {
   };
 }
 
+/**
+ * Convert a pipeline `deals` row into the shape DealBuilder's draft state
+ * expects. Used when editing a previously-sent quote — the rep clicks
+ * Edit/Re-send from My Deals and we hydrate the form from the pipeline
+ * record instead of from a `deal_drafts` row.
+ *
+ * Two complications:
+ *   1. The pipeline schema uses a different shape than the form's `draft`
+ *      object — some fields are renamed (sales_rep is a single string in
+ *      pipeline, two fields in the form), some are stringified, some are
+ *      boolean-as-Yes/No. We unpick those here so the form doesn't have
+ *      to.
+ *   2. The structured equipment list lives in raw_csv.equipment_items
+ *      (we stashed it there at submit time as a JSON snapshot). We
+ *      restore it as the equipmentItems array.
+ *
+ * Returns { draft, equipmentItems } — the caller drops these straight
+ * into state.
+ */
+function hydrateFromPipelineDeal(row, profile, session) {
+  const blank = makeBlankDraft(profile, session);
+  if (!row) return { draft: blank, equipmentItems: [] };
+
+  // Split sales_rep "First Last" back into first+last when only one column.
+  // Prefer the rep's own session if it matches sales_rep_email (better data).
+  const [repFirst, ...repRest] = (row.sales_rep || '').split(/\s+/);
+  const repLast = repRest.join(' ');
+
+  // contact_name = "First Last" was set at submit time when first+last were both filled
+  const [ctFirst, ...ctRest] = (row.contact_name || '').split(/\s+/);
+  const ctLast = ctRest.join(' ');
+
+  const draft = {
+    ...blank,
+    // Sales rep — prefer first/last from the original session over the
+    // re-split, but fall back to the split if needed.
+    route_number: row.route_number || '',
+    sales_rep_first_name: row.first_name && row.sales_rep ? repFirst : (blank.sales_rep_first_name || repFirst || ''),
+    sales_rep_last_name:  row.sales_rep ? repLast : blank.sales_rep_last_name || '',
+    sales_rep_email:      row.sales_rep_email || blank.sales_rep_email,
+
+    // Customer identity
+    is_new_customer:      !!row.is_new_customer,
+    customer_account:     row.customer_account || '',
+    customer_type:        row.customer_type || '',
+    sub_group:            row.sub_group || '',
+    henderson_account:    !!row.henderson_account,
+    change_of_ownership:  !!row.change_of_ownership,
+    prior_account_num:    row.prior_account_num || '',
+    change_details:       row.change_details || '',
+
+    // Chain & location
+    chain_store:          row.chain_store === 'Yes' || row.chain_store === true,
+    chain_group_num:      row.chain_group_num || '',
+    number_of_locations:  row.number_of_locations ?? '',
+    store_name:           row.store_name || '',
+    legal_business_name:  row.legal_business_name || '',
+    address:              row.address || '',
+    city:                 row.city || '',
+    state:                row.state || '',
+    zip_code:             row.zip_code || '',
+    store_phone:          row.store_phone || '',
+
+    // Primary contact — use stored first/last directly when available,
+    // fall back to splitting contact_name.
+    contact_first_name:   row.first_name || ctFirst || '',
+    contact_last_name:    row.last_name  || ctLast  || '',
+    contact_cell:         row.contact_cell || row.phone || '',
+    contact_email:        row.contact_email || row.email || '',
+
+    // Coffee program & delivery
+    coffee_program:           row.coffee_program || '',
+    distribution_method:      row.distribution_method || blank.distribution_method,
+    delivery_method:          row.delivery_method || '',
+    delivery_recurrence:      row.delivery_recurrence || '',
+    current_coffee_supplier:  row.current_coffee_supplier || '',
+    parts_service_option:     row.parts_service_option || '',
+
+    // Distributor
+    parent_distributor:        row.parent_distributor || '',
+    parent_distributor_num:    row.parent_distributor_num || '',
+    core_mark_div_num:         row.core_mark_div_num || '',
+    distributor_warehouse:     row.distributor_warehouse || '',
+    distributor_customer_num:  row.distributor_customer_num || '',
+    distributor_rep_name:      row.distributor_rep_name || '',
+    distributor_rep_email:     row.distributor_rep_email || '',
+    distributor_rep_phone:     row.distributor_rep_phone || '',
+
+    // ROM
+    rom_person:           row.rom_person || '',
+    rom_email:            row.rom_email || '',
+    rom_region:           row.rom || row.rom_region || '',
+
+    // Equipment & financials
+    deal_type:            row.deal_type || '',
+    coffee_spend_3mo:     row.coffee_spend_3mo ?? '',
+    expected_monthly_sales: row.expected_monthly_sales ?? '',
+
+    // Install
+    target_install_date:  row.target_install_date || '',
+    need_by_date:         row.need_by_date || '',
+    emergency_install:    row.emergency_install === 'Yes' || row.emergency_install === true,
+    emergency_install_details: row.emergency_install_details || '',
+
+    // Graphics
+    graphics_package:        row.graphics_package || '',
+    ship_graphics_with_equip: !!row.ship_graphics_with_equip,
+    has_custom_graphics:      !!row.has_custom_graphics,
+
+    // Internal notes
+    notes:                row.notes || '',
+
+    // Quote-specific
+    quote_cover_note:     row.quote_cover_note || '',
+    quote_valid_until:    row.quote_valid_until || '',
+  };
+
+  // Equipment items — preferred source is raw_csv.equipment_items (structured),
+  // fall back to nothing if the snapshot is missing. We don't try to re-parse
+  // the equipment_selection text blob — that's the human-readable summary,
+  // not authoritative.
+  const equipmentItems = Array.isArray(row.raw_csv?.equipment_items)
+    ? row.raw_csv.equipment_items
+    : [];
+
+  return { draft, equipmentItems };
+}
+
 /* ───────────────────────── Main component ───────────────────────── */
 
-export default function DealBuilder({ profile, session, navigate, draftId = null }) {
+export default function DealBuilder({ profile, session, navigate, draftId = null, editQuoteId = null }) {
   const [draft, setDraft] = useState(() => makeBlankDraft(profile, session));
   const [equipmentItems, setEquipmentItems] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -153,8 +284,23 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
    */
   const [currentDraftId, setCurrentDraftId] = useState(draftId);
   const [draftStatus, setDraftStatus] = useState('idle');   // 'idle' | 'saving' | 'saved' | 'error'
-  const [hydrating, setHydrating] = useState(Boolean(draftId));
+  const [hydrating, setHydrating] = useState(Boolean(draftId) || Boolean(editQuoteId));
   const [hydrationError, setHydrationError] = useState(null);
+
+  /* ───── Quote-edit state ─────
+   * editingQuote — the full pipeline `deals` row we're editing, or null if
+   *                we're not in edit mode. Held so we can preserve fields
+   *                we don't change (quote_number, quote_token, original
+   *                quote_first_sent_at, raw_csv, etc.) and bump the right
+   *                quote_revision counter on re-send.
+   * resending    — true while the re-send pipeline UPDATE is in flight.
+   *                Drives the button label and prevents double-clicks.
+   * editMode     — convenience boolean derived from editingQuote being set,
+   *                used to switch UI affordances throughout the form.
+   */
+  const [editingQuote, setEditingQuote] = useState(null);
+  const [resending, setResending] = useState(false);
+  const editMode = Boolean(editingQuote);
 
   /**
    * Hydrate an existing draft when the page mounts with ?draft=<uuid> in the
@@ -210,6 +356,61 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [draftId]);
+
+  /**
+   * Hydrate from a pipeline `deals` row when the page mounts with
+   * ?edit=<uuid> in the URL. This is the quote-editor entry point — the
+   * rep clicked Edit on a previously-sent quote in My Deals.
+   *
+   * Edit mode is mutually exclusive with draft mode. If both URL params
+   * are set we prefer edit (per the router's params handling) and ignore
+   * draft. The form's data shape is the same either way — only the
+   * submit-side behaviour changes (re-send + revision log vs new insert).
+   */
+  useEffect(() => {
+    if (!editQuoteId) return;
+    let cancelled = false;
+    setHydrating(true);
+    setHydrationError(null);
+
+    fetchDealById(editQuoteId)
+      .then(({ data, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setHydrationError(`Could not load quote: ${error.message}`);
+          setHydrating(false);
+          return;
+        }
+        if (!data) {
+          setHydrationError('That quote could not be found.');
+          setHydrating(false);
+          return;
+        }
+        // Sanity check — only quotes should be editable from this path.
+        // A direct-submit deal hitting this code path means a bad URL or a
+        // race; refuse rather than corrupt a non-quote deal.
+        if (!data.is_quote) {
+          setHydrationError('This deal isn\'t a quote and can\'t be edited from here.');
+          setHydrating(false);
+          return;
+        }
+        const { draft: hydratedDraft, equipmentItems: hydratedItems } =
+          hydrateFromPipelineDeal(data, profile, session);
+        setDraft(hydratedDraft);
+        setEquipmentItems(hydratedItems);
+        setSubmitMode('quote');     // editing a quote is always quote mode
+        setEditingQuote(data);
+        setHydrating(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setHydrationError(`Could not load quote: ${err.message}`);
+        setHydrating(false);
+      });
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editQuoteId]);
 
   // Lookup lists
   const distributorList     = useLookupList('parent_distributor');
@@ -625,6 +826,132 @@ ${repName}`;
     window.location.href = mailtoUrl;
   }
 
+  /**
+   * Re-send an edited quote. Called by the "Re-send quote →" button that
+   * replaces the regular submit button when the form is in edit mode.
+   *
+   * Flow:
+   *   1. Validate against quote-mode rules (same as a fresh quote).
+   *   2. Build the payload from the current form state — same shape as
+   *      submitAsQuote, but without generating a new quote_number/token
+   *      (we keep the originals so the customer's saved URL still works).
+   *   3. UPDATE the existing deals row via updateQuote(), bumping
+   *      quote_revision and quote_last_sent_at.
+   *   4. Log a deal_revisions audit row with a high-level diff summary.
+   *   5. Re-open mailto: with the existing quote URL pre-filled.
+   *
+   * What we deliberately keep stable across revisions:
+   *   - id, quote_number, quote_token (so the customer URL doesn't break)
+   *   - quote_first_sent_at (the original first-send timestamp)
+   *   - is_quote stays true; phase stays 'sales'; customer_decision stays
+   *     whatever it was. If the customer already decided lease/finance,
+   *     editing the quote shouldn't undo that — the rep should record a
+   *     new decision separately if needed.
+   */
+  async function resendQuote() {
+    setError(null);
+    if (!editingQuote) {
+      setError('Internal error: edit mode active but no quote loaded.');
+      return;
+    }
+    const validationError = validate('quote');
+    if (validationError) {
+      setError(validationError);
+      return;
+    }
+    if (!isDealPipelineConfigured) {
+      setError('Deal pipeline is not configured.');
+      return;
+    }
+    setResending(true);
+
+    const base = buildBasePayload();
+
+    // Honor any valid-until the rep set, otherwise keep the original (don't
+    // silently extend an expired quote by 30 days without the rep's intent).
+    const validUntil = draft.quote_valid_until || editingQuote.quote_valid_until || (() => {
+      const d = new Date();
+      d.setDate(d.getDate() + 30);
+      return d.toISOString().slice(0, 10);
+    })();
+
+    const nextRevision = (editingQuote.quote_revision || 1) + 1;
+
+    // Patch — everything from the form plus quote-specific updates. We
+    // explicitly DO NOT touch quote_number, quote_token, quote_first_sent_at,
+    // quote_first_viewed_at, customer_decision*, phase, is_quote.
+    const patch = {
+      ...base,
+      quote_cover_note: draft.quote_cover_note?.trim() || null,
+      quote_valid_until: validUntil,
+      quote_revision: nextRevision,
+    };
+
+    const { data: updated, error: updErr } = await updateQuote(editingQuote.id, patch);
+    if (updErr) {
+      setError(`Could not save changes: ${updErr.message}`);
+      setResending(false);
+      return;
+    }
+
+    // Audit log — record what changed at a high level. The full before/after
+    // would be more useful for forensics but we don't want a 50KB diff payload
+    // per revision. Summarize.
+    await logDealRevision({
+      dealId: editingQuote.id,
+      revision: nextRevision,
+      changedBy: base.sales_rep || session?.user?.email || 'unknown',
+      changeKind: 'quote_edit',
+      diff: {
+        equipment_count: equipmentItems.length,
+        total_eq_cost: dealTotal,
+        cover_note_changed:
+          (draft.quote_cover_note || '') !== (editingQuote.quote_cover_note || ''),
+        valid_until_changed:
+          validUntil !== editingQuote.quote_valid_until,
+        revision_from: editingQuote.quote_revision || 1,
+        revision_to: nextRevision,
+      },
+      notes: `Re-sent to ${draft.contact_email}`,
+    });
+
+    await logDealActivity(
+      editingQuote.id,
+      'Quote re-sent',
+      `Revision ${nextRevision} sent to ${draft.contact_email} (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
+      base.sales_rep,
+    );
+
+    // Re-open the rep's email client with the existing customer URL.
+    const quoteUrl = buildQuoteUrl(editingQuote.quote_number, editingQuote.quote_token);
+    const customerName = [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' ');
+    const mailtoUrl = buildMailto(
+      draft.contact_email,
+      customerName,
+      editingQuote.quote_number,
+      quoteUrl,
+      validUntil,
+      draft.quote_cover_note?.trim(),
+    );
+
+    setSuccessInfo({
+      kind: 'quote',
+      dealId: editingQuote.id,
+      quoteNumber: editingQuote.quote_number,
+      quoteUrl,
+      mailtoUrl,
+      customerName,
+      customerEmail: draft.contact_email,
+      storeName: draft.store_name,
+      validUntil,
+      isResend: true,
+      newRevision: nextRevision,
+    });
+    setResending(false);
+
+    window.location.href = mailtoUrl;
+  }
+
   function startNewDeal() {
     setDraft(makeBlankDraft(profile, session));
     setEquipmentItems([]);
@@ -771,11 +1098,17 @@ ${repName}`;
                   <path strokeLinecap="round" strokeLinejoin="round" d="m5 13 4 4L19 7" />
                 </svg>
               </div>
-              <h1 className="text-2xl md:text-3xl font-light text-slate-900 mb-2">Quote ready to send</h1>
+              <h1 className="text-2xl md:text-3xl font-light text-slate-900 mb-2">
+                {successInfo.isResend ? 'Updated quote ready to send' : 'Quote ready to send'}
+              </h1>
               <p className="text-slate-600 leading-relaxed mb-2 max-w-md mx-auto">
-                Quote <span className="font-mono font-medium text-slate-900">{successInfo.quoteNumber}</span> for{' '}
+                Quote <span className="font-mono font-medium text-slate-900">{successInfo.quoteNumber}</span>
+                {successInfo.isResend && successInfo.newRevision && (
+                  <> · <span className="text-xs text-slate-500">revision {successInfo.newRevision}</span></>
+                )}
+                {' '}for{' '}
                 <span className="font-medium text-slate-900">{successInfo.storeName}</span>{' '}
-                is saved in the pipeline.
+                is {successInfo.isResend ? 'updated in' : 'saved in'} the pipeline.
               </p>
               <p className="text-sm text-slate-500 mb-6 max-w-md mx-auto">
                 Your email client should have opened with a message to{' '}
@@ -827,9 +1160,9 @@ ${repName}`;
               >
                 Preview quote page
               </a>
-              <button onClick={startNewDeal}
+              <button onClick={successInfo.isResend ? () => navigate('my-deals') : startNewDeal}
                       className="px-5 py-2.5 border border-page-200 bg-white rounded text-slate-700 hover:bg-page-50 transition-colors">
-                Start another
+                {successInfo.isResend ? 'Back to My deals' : 'Start another'}
               </button>
             </div>
           </div>
@@ -890,11 +1223,19 @@ ${repName}`;
     <div className="px-4 md:px-6 lg:px-10 py-4 md:py-6 max-w-4xl">
       <div className="mb-5 md:mb-6">
         <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">
-          {currentDraftId ? 'Resuming draft' : 'New deal'}
+          {editMode
+            ? `Editing quote ${editingQuote.quote_number || ''}`
+            : currentDraftId
+              ? 'Resuming draft'
+              : 'New deal'}
         </p>
-        <h1 className="text-2xl md:text-3xl font-light text-slate-900">Deal Sheet</h1>
+        <h1 className="text-2xl md:text-3xl font-light text-slate-900">
+          {editMode ? 'Edit Quote' : 'Deal Sheet'}
+        </h1>
         <p className="text-sm text-slate-600 mt-1 max-w-2xl">
-          Complete the form and submit to create a new deal in the pipeline. After submission, the leasing team can edit the deal in the Deal Pipeline dashboard.
+          {editMode
+            ? `Update what's quoted, then click Re-send. The customer's existing link (${editingQuote.quote_number}) keeps working — they'll see the updated content next time they open it.`
+            : 'Complete the form and submit to create a new deal in the pipeline. After submission, the leasing team can edit the deal in the Deal Pipeline dashboard.'}
         </p>
       </div>
 
@@ -920,47 +1261,84 @@ ${repName}`;
       {/* This is the v22a-v2 pivot. Selecting Quote shows the minimum set of
           fields needed to send a customer-facing quote; selecting Deal shows
           the full leasing/ops form. The rep can switch at any time without
-          losing data — see changeSubmitMode() for the data-loss confirmation. */}
-      <div className="mb-4 bg-white border border-page-200 rounded-lg p-2">
-        <div className="grid grid-cols-2 gap-2">
-          <button
-            type="button"
-            onClick={() => changeSubmitMode('quote')}
-            className={`text-left rounded-md px-4 py-3 border transition-colors
-              ${submitMode === 'quote'
-                ? 'bg-navy-900 border-navy-900 text-chalk-50 shadow-card'
-                : 'bg-white border-page-200 text-slate-700 hover:border-navy-300 hover:bg-page-50'}`}
-          >
-            <div className="flex items-center gap-2 mb-0.5">
-              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
-              <span className="text-sm font-semibold">Quote</span>
-            </div>
-            <p className={`text-xs leading-snug ${submitMode === 'quote' ? 'text-chalk-50/80' : 'text-slate-500'}`}>
-              Send to customer for review
-            </p>
-          </button>
-          <button
-            type="button"
-            onClick={() => changeSubmitMode('deal')}
-            className={`text-left rounded-md px-4 py-3 border transition-colors
-              ${submitMode === 'deal'
-                ? 'bg-navy-900 border-navy-900 text-chalk-50 shadow-card'
-                : 'bg-white border-page-200 text-slate-700 hover:border-navy-300 hover:bg-page-50'}`}
-          >
-            <div className="flex items-center gap-2 mb-0.5">
-              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <span className="text-sm font-semibold">Deal</span>
-            </div>
-            <p className={`text-xs leading-snug ${submitMode === 'deal' ? 'text-chalk-50/80' : 'text-slate-500'}`}>
-              Full submission to leasing/operations
-            </p>
-          </button>
+          losing data — see changeSubmitMode() for the data-loss confirmation.
+
+          Hidden in edit mode: when editing an existing quote, the lifecycle
+          is fixed (it stays a quote, with the same number/token). Showing
+          the toggle would imply you could re-submit as a deal, which would
+          be a different flow entirely. */}
+      {!editMode && (
+        <div className="mb-4 bg-white border border-page-200 rounded-lg p-2">
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={() => changeSubmitMode('quote')}
+              className={`text-left rounded-md px-4 py-3 border transition-colors
+                ${submitMode === 'quote'
+                  ? 'bg-navy-900 border-navy-900 text-chalk-50 shadow-card'
+                  : 'bg-white border-page-200 text-slate-700 hover:border-navy-300 hover:bg-page-50'}`}
+            >
+              <div className="flex items-center gap-2 mb-0.5">
+                <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                </svg>
+                <span className="text-sm font-semibold">Quote</span>
+              </div>
+              <p className={`text-xs leading-snug ${submitMode === 'quote' ? 'text-chalk-50/80' : 'text-slate-500'}`}>
+                Send to customer for review
+              </p>
+            </button>
+            <button
+              type="button"
+              onClick={() => changeSubmitMode('deal')}
+              className={`text-left rounded-md px-4 py-3 border transition-colors
+                ${submitMode === 'deal'
+                  ? 'bg-navy-900 border-navy-900 text-chalk-50 shadow-card'
+                  : 'bg-white border-page-200 text-slate-700 hover:border-navy-300 hover:bg-page-50'}`}
+            >
+              <div className="flex items-center gap-2 mb-0.5">
+                <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                </svg>
+                <span className="text-sm font-semibold">Deal</span>
+              </div>
+              <p className={`text-xs leading-snug ${submitMode === 'deal' ? 'text-chalk-50/80' : 'text-slate-500'}`}>
+                Full submission to leasing/operations
+              </p>
+            </button>
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Edit-mode banner — shown in place of the mode toggle. Communicates
+          that we're editing a real customer-facing quote and that re-sending
+          will bump the revision counter. */}
+      {editMode && (
+        <div className="mb-4 bg-accent-500/5 border border-accent-500/30 rounded-lg p-4">
+          <div className="flex items-start gap-3">
+            <div className="w-8 h-8 rounded-full bg-accent-500/15 text-accent-700 flex items-center justify-center flex-shrink-0">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M11 5H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2v-5m-1.414-9.414a2 2 0 1 1 2.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+            </div>
+            <div className="text-sm">
+              <div className="font-medium text-slate-900">
+                Editing quote {editingQuote.quote_number}
+                {editingQuote.quote_revision > 1 && (
+                  <span className="ml-2 text-xs font-normal text-slate-500">
+                    (current revision {editingQuote.quote_revision})
+                  </span>
+                )}
+              </div>
+              <p className="text-slate-600 mt-0.5 leading-relaxed">
+                Re-sending bumps this to revision {(editingQuote.quote_revision || 1) + 1} and
+                opens your email client with the customer&apos;s existing link, so they can view
+                the updated quote at the same URL. The original send date and any view history are preserved.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ─── Section: Sales Rep & Submission ─── */}
       <Section title="Sales Rep & Submission">
@@ -1400,32 +1778,60 @@ ${repName}`;
           shows up in the My Deals workspace for resumption later. */}
       <div className="bg-white border border-page-200 rounded-lg p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div className="text-sm text-slate-600 max-w-md">
-          <div className="font-medium text-slate-900 mb-0.5">Ready to send?</div>
-          {submitMode === 'quote' ? (
+          <div className="font-medium text-slate-900 mb-0.5">
+            {editMode ? 'Ready to re-send?' : 'Ready to send?'}
+          </div>
+          {editMode ? (
+            <>This will update the quote in the pipeline and re-open your email client so you can let the customer know about the changes. Their existing link stays the same.</>
+          ) : submitMode === 'quote' ? (
             <>This emails the customer for review. After they reply, you'll record their decision in the Pipeline dashboard.</>
           ) : (
             <>This goes straight to the leasing/operations team — use Deal only if the customer has already agreed.</>
           )}
         </div>
         <div className="flex flex-col sm:flex-row gap-2 sm:items-center">
-          {/* Save Draft — secondary action. The status badge sits just above
-              the button on mobile (status above its action) and tucks inline
-              on desktop for a tighter row. */}
-          <div className="flex flex-col items-stretch sm:items-end gap-1">
+          {/* Save Draft — secondary action. Hidden in edit mode (drafts and
+              live edits are different lifecycles; saving an edit-in-progress
+              as a "draft" would create confusing duplicate state). */}
+          {!editMode && (
+            <div className="flex flex-col items-stretch sm:items-end gap-1">
+              <button
+                onClick={saveDraft}
+                disabled={submitting || draftStatus === 'saving'}
+                className="px-4 py-3 bg-white border border-page-300 text-slate-700 font-medium rounded
+                           hover:bg-page-50 hover:border-navy-300 disabled:opacity-40
+                           disabled:cursor-not-allowed transition-colors whitespace-nowrap text-sm"
+                title={currentDraftId ? 'Update your saved draft' : 'Save what you have so you can finish it later'}
+              >
+                {draftStatus === 'saving' ? 'Saving…' : (currentDraftId ? 'Update draft' : 'Save draft')}
+              </button>
+              <DraftStatusBadge status={draftStatus} hasDraftId={Boolean(currentDraftId)} />
+            </div>
+          )}
+
+          {/* Edit mode also gets a Cancel button so the rep can back out without
+              committing changes. We use navigate('my-deals') since that's where
+              they came from — clean return to the workspace. */}
+          {editMode && (
             <button
-              onClick={saveDraft}
-              disabled={submitting || draftStatus === 'saving'}
+              onClick={() => navigate('my-deals')}
+              disabled={resending}
               className="px-4 py-3 bg-white border border-page-300 text-slate-700 font-medium rounded
                          hover:bg-page-50 hover:border-navy-300 disabled:opacity-40
                          disabled:cursor-not-allowed transition-colors whitespace-nowrap text-sm"
-              title={currentDraftId ? 'Update your saved draft' : 'Save what you have so you can finish it later'}
             >
-              {draftStatus === 'saving' ? 'Saving…' : (currentDraftId ? 'Update draft' : 'Save draft')}
+              Cancel
             </button>
-            <DraftStatusBadge status={draftStatus} hasDraftId={Boolean(currentDraftId)} />
-          </div>
+          )}
 
-          {submitMode === 'quote' ? (
+          {editMode ? (
+            <button onClick={resendQuote} disabled={resending || !isDealPipelineConfigured}
+                    className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
+                               hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
+                               transition-colors whitespace-nowrap">
+              {resending ? 'Re-sending…' : 'Re-send quote →'}
+            </button>
+          ) : submitMode === 'quote' ? (
             <button onClick={submitAsQuote} disabled={submitting || !isDealPipelineConfigured}
                     className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
                                hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
