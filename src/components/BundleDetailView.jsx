@@ -111,15 +111,18 @@ export default function BundleDetailView({ bundle, onClose, onStartDeal }) {
             )}
           </div>
 
-          {/* Supply/Service/Marketing inclusion — v27 */}
+          {/* Supply/Service/Marketing inclusion — v28 wording: digital media,
+              program-branded marketing, equipment service; conditional on
+              compliance with the SSM Agreement. */}
           <div className="bg-accent-500/5 border border-accent-500/20 rounded-lg p-4">
             <h3 className="text-xs uppercase tracking-[0.2em] text-accent-700 mb-2 font-semibold">
               Included with this Program
             </h3>
             <p className="text-sm text-slate-700 leading-relaxed">
-              Equipment service, marketing materials, and media delivery are included
-              for the term of the Program lease — subject to the customer remaining
-              in compliance with their <span className="font-medium">Supply, Service &amp; Marketing Agreement</span> with Ronnoco.
+              Customers receive <span className="font-medium">program-branded marketing</span>,
+              {' '}<span className="font-medium">digital media</span>, and
+              {' '}<span className="font-medium">equipment service</span> for the duration of the lease —
+              {' '}when in compliance with their <span className="font-medium">Supply, Service &amp; Marketing Agreement</span> with Ronnoco.
             </p>
           </div>
 

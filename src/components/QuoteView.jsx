@@ -233,20 +233,19 @@ function QuoteDocument({ quote, dealBundle }) {
             )}
           </div>
 
-          {/* Program inclusion callout (bundle deals only) — v27.
-              The Supply, Service & Marketing Agreement is the contract that
-              governs what's included; we name it explicitly so the customer
-              understands the relationship. */}
+          {/* Program inclusion callout (bundle deals only) — v28 wording:
+              digital media, program-branded marketing, equipment service;
+              conditional on compliance with the SSM Agreement. */}
           {isBundleDeal && (
             <div className="px-6 md:px-10 py-6 border-b border-page-200 bg-accent-500/5">
               <h3 className="text-[11px] uppercase tracking-wider text-accent-700 mb-2 font-semibold">
                 Included with your {dealBundle.bundle_name || 'Program'}
               </h3>
               <p className="text-sm text-slate-700 leading-relaxed">
-                Equipment service, marketing materials, and media delivery are included
-                for the term of your Program lease, subject to the terms of your{' '}
-                <span className="font-medium">Supply, Service &amp; Marketing Agreement</span>{' '}
-                with Ronnoco.
+                You'll receive <span className="font-medium">program-branded marketing</span>,
+                {' '}<span className="font-medium">digital media</span>, and
+                {' '}<span className="font-medium">equipment service</span> for the duration of the lease —
+                {' '}when in compliance with your <span className="font-medium">Supply, Service &amp; Marketing Agreement</span> with Ronnoco.
               </p>
             </div>
           )}
