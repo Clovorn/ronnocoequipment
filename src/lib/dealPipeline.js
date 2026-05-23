@@ -366,3 +366,69 @@ export async function recordCustomerDecision({ dealId, decision, notes, actor, c
 
   return { data: updated, error: null };
 }
+
+/**
+ * Insert a deal_bundles snapshot row for a freshly-submitted bundle deal.
+ *
+ * Called by DealBuilder right after submitDealToPipeline() succeeds, when
+ * bundle mode is active. Best-effort but more important than activity logs:
+ * if this fails, the deal exists but the dashboard / customer quote won't
+ * recognize it as a bundle deal. We return the error so the caller can
+ * surface it.
+ *
+ * The single-bundle-per-deal unique index in the pipeline DB prevents
+ * double-inserts on retries.
+ */
+export async function insertDealBundle(payload) {
+  if (!dealPipeline) {
+    return { data: null, error: { message: 'Deal pipeline not configured.' } };
+  }
+  const { data, error } = await dealPipeline
+    .from('deal_bundles')
+    .insert(payload)
+    .select()
+    .single();
+  return { data, error };
+}
+
+/**
+ * Update the rollup column deals.total_monthly_charged after a bundle deal
+ * is submitted. Kept separate from insertDealBundle so the caller can decide
+ * whether to await or fire-and-forget.
+ */
+export async function setDealTotalMonthly(dealId, totalMonthlyCharged) {
+  if (!dealPipeline) {
+    return { error: { message: 'Deal pipeline not configured.' } };
+  }
+  const { error } = await dealPipeline
+    .from('deals')
+    .update({ total_monthly_charged: totalMonthlyCharged })
+    .eq('id', dealId);
+  return { error };
+}
+
+/**
+ * Fetch the deal_bundles snapshot row for a given deal id, if any.
+ * Used by QuoteView to render the bundle program section on customer quotes.
+ *
+ * Returns { bundle: row | null, error }. Bundle is null both for non-bundle
+ * deals (legitimate) and for read errors (logged).
+ */
+export async function fetchDealBundle(dealId) {
+  if (!dealPipeline) {
+    return { bundle: null, error: { message: 'Deal pipeline not configured.' } };
+  }
+  if (!dealId) {
+    return { bundle: null, error: null };
+  }
+  const { data, error } = await dealPipeline
+    .from('deal_bundles')
+    .select('*')
+    .eq('deal_id', dealId)
+    .maybeSingle();
+  if (error) {
+    console.warn('Could not fetch deal_bundle:', error);
+    return { bundle: null, error };
+  }
+  return { bundle: data, error: null };
+}

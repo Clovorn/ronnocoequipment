@@ -112,7 +112,7 @@ export default function App() {
       )}
 
       {route.name === 'bundles' && (
-        <BundlesBrowser canEdit={canEditCatalog} />
+        <BundlesBrowser canEdit={canEditCatalog} navigate={navigate} />
       )}
 
       {route.name === 'favorites' && (
@@ -140,6 +140,7 @@ export default function App() {
           navigate={navigate}
           draftId={route.params.draftId}
           editQuoteId={route.params.editQuoteId}
+          bundleId={route.params.bundleId}
         />
       )}
 

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
 
-export default function BundleDetailView({ bundle, onClose }) {
+export default function BundleDetailView({ bundle, onClose, onStartDeal }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -37,10 +37,12 @@ export default function BundleDetailView({ bundle, onClose }) {
   }, [onClose]);
 
   const included = items.filter((it) => it.item_type === 'included');
-  const optional = items.filter((it) => it.item_type === 'optional');
 
-  const hasMonthly = bundle.monthly_lease_price != null;
-  const hasList    = bundle.list_price != null;
+  // v27: bundles now use the computed pricing model. Show only the marketed
+  // "starts at" monthly fee from target_monthly_fee. Falls back to legacy
+  // monthly_lease_price for any bundles not yet configured under the new model.
+  const startsAt = bundle.target_monthly_fee ?? bundle.monthly_lease_price ?? null;
+  const termMonths = bundle.term_months ?? bundle.lease_term_months ?? 36;
 
   return (
     <>
@@ -59,7 +61,7 @@ export default function BundleDetailView({ bundle, onClose }) {
                         flex items-center justify-between border-b border-navy-800">
           <div className="min-w-0 flex-1">
             <p className="text-[10px] md:text-xs uppercase tracking-[0.2em] text-chalk-300 mb-0.5 font-medium">
-              Bundle{bundle.category ? ` · ${bundle.category}` : ''}
+              Distributor Program Bundle{bundle.category ? ` · ${bundle.category}` : ''}
             </p>
             <h2 className="text-base md:text-lg font-medium text-chalk-50 truncate">
               {bundle.name}
@@ -86,41 +88,39 @@ export default function BundleDetailView({ bundle, onClose }) {
             <p className="text-sm text-slate-700 leading-relaxed">{bundle.long_description}</p>
           )}
 
-          {/* Pricing summary */}
+          {/* Pricing summary — v27 model: starts-at fee only */}
           <div className="bg-page-50 border border-page-200 rounded-lg p-4">
-            <div className="grid grid-cols-2 gap-4">
-              {hasMonthly && (
-                <div>
-                  <div className="text-xs uppercase tracking-wider text-slate-500 mb-1 font-medium">
-                    Monthly Lease
-                  </div>
-                  <div className="font-mono tabular-nums text-2xl font-medium text-navy-900">
-                    ${bundle.monthly_lease_price.toLocaleString(undefined, { minimumFractionDigits: 0 })}
-                    <span className="text-sm text-slate-500 font-sans font-normal">/mo</span>
-                  </div>
-                  {bundle.lease_term_months && (
-                    <div className="text-xs text-slate-500 mt-0.5">
-                      {bundle.lease_term_months}-month term
-                    </div>
-                  )}
-                </div>
-              )}
-              {hasList && (
-                <div>
-                  <div className="text-xs uppercase tracking-wider text-slate-500 mb-1 font-medium">
-                    Outright Purchase
-                  </div>
-                  <div className="font-mono tabular-nums text-2xl font-medium text-navy-900">
-                    ${bundle.list_price.toLocaleString(undefined, { minimumFractionDigits: 0 })}
-                  </div>
-                  {bundle.included_items_total > bundle.list_price && (
-                    <div className="text-xs text-accent-700 mt-0.5 font-medium">
-                      Save ${(bundle.included_items_total - bundle.list_price).toLocaleString(undefined, { minimumFractionDigits: 0 })} vs. à la carte
-                    </div>
-                  )}
-                </div>
-              )}
+            <div className="text-xs uppercase tracking-wider text-slate-500 mb-1 font-medium">
+              Program Lease
             </div>
+            {startsAt != null ? (
+              <>
+                <div className="font-mono tabular-nums text-2xl font-medium text-navy-900">
+                  <span className="text-sm text-slate-500 font-sans font-normal mr-1">starts at</span>
+                  ${startsAt.toLocaleString(undefined, { minimumFractionDigits: 0 })}
+                  <span className="text-sm text-slate-500 font-sans font-normal">/mo</span>
+                </div>
+                <div className="text-xs text-slate-500 mt-0.5">
+                  {termMonths}-month term · Final monthly is computed from the equipment selected.
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-slate-500 italic">
+                Marketed monthly fee not yet configured.
+              </div>
+            )}
+          </div>
+
+          {/* Supply/Service/Marketing inclusion — v27 */}
+          <div className="bg-accent-500/5 border border-accent-500/20 rounded-lg p-4">
+            <h3 className="text-xs uppercase tracking-[0.2em] text-accent-700 mb-2 font-semibold">
+              Included with this Program
+            </h3>
+            <p className="text-sm text-slate-700 leading-relaxed">
+              Equipment service, marketing materials, and media delivery are included
+              for the term of the Program lease — subject to the customer remaining
+              in compliance with their <span className="font-medium">Supply, Service &amp; Marketing Agreement</span> with Ronnoco.
+            </p>
           </div>
 
           {loading && <div className="py-8 text-center text-slate-500 text-sm">Loading items…</div>}
@@ -131,39 +131,35 @@ export default function BundleDetailView({ bundle, onClose }) {
           )}
 
           {!loading && !error && (
-            <>
-              {/* Included items */}
-              <section>
-                <h3 className="text-xs uppercase tracking-[0.2em] text-slate-500 mb-3 font-medium">
-                  Included ({included.length})
-                </h3>
-                {included.length === 0 ? (
-                  <p className="text-sm text-slate-400 italic">No items added yet.</p>
-                ) : (
-                  <div className="space-y-2">
-                    {included.map((it) => <BundleItemRow key={it.id} item={it} />)}
-                  </div>
-                )}
-              </section>
-
-              {/* Optional add-ons */}
-              {optional.length > 0 && (
-                <section>
-                  <h3 className="text-xs uppercase tracking-[0.2em] text-slate-500 mb-3 font-medium">
-                    Optional add-ons ({optional.length})
-                  </h3>
-                  <div className="space-y-2">
-                    {optional.map((it) => <BundleItemRow key={it.id} item={it} optional />)}
-                  </div>
-                </section>
+            <section>
+              <h3 className="text-xs uppercase tracking-[0.2em] text-slate-500 mb-3 font-medium">
+                Included Equipment ({included.length})
+              </h3>
+              {included.length === 0 ? (
+                <p className="text-sm text-slate-400 italic">No items added yet.</p>
+              ) : (
+                <div className="space-y-2">
+                  {included.map((it) => <BundleItemRow key={it.id} item={it} />)}
+                </div>
               )}
-            </>
+            </section>
           )}
 
-          {/* Footer placeholder for future "Add to quote" */}
-          <div className="text-xs text-slate-400 text-center pt-4 pb-2">
-            Quote builder coming soon — pick a bundle to start a deal.
-          </div>
+          {/* Start deal CTA — sticks at bottom of scroll content */}
+          {onStartDeal && (
+            <div className="pt-4">
+              <button
+                onClick={onStartDeal}
+                className="w-full px-4 py-3 bg-navy-900 text-chalk-50 text-sm font-medium rounded
+                           hover:bg-navy-800 transition-colors">
+                Start deal from this bundle →
+              </button>
+              <p className="text-[11px] text-slate-500 mt-2 text-center leading-relaxed">
+                The customer's monthly will be calculated from the equipment included
+                on the deal — the rep can substitute eligible equipment in the next step.
+              </p>
+            </div>
+          )}
         </div>
       </aside>
     </>

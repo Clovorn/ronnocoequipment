@@ -34,10 +34,15 @@ function parseRoute(hash) {
     case 'bundles':    return { name: 'bundles',    params: {} };
     case 'favorites':  return { name: 'favorites',  params: {} };
     // Deal sheet — optional ?draft=<uuid> hydrates an in-progress draft,
-    // optional ?edit=<uuid> hydrates a previously-sent quote for re-sending.
-    // The two are mutually exclusive in practice; if both are present, edit
-    // wins (since you can't be drafting AND editing simultaneously).
-    case 'deal':       return { name: 'deal',       params: { draftId: query.get('draft') || null, editQuoteId: query.get('edit') || null } };
+    // optional ?edit=<uuid> hydrates a previously-sent quote for re-sending,
+    // optional ?bundle=<uuid> starts the deal in bundle mode (v27).
+    // The three are mutually exclusive in practice; if more than one is present,
+    // edit > draft > bundle in priority order.
+    case 'deal':       return { name: 'deal',       params: {
+                                  draftId:     query.get('draft')  || null,
+                                  editQuoteId: query.get('edit')   || null,
+                                  bundleId:    query.get('bundle') || null,
+                                } };
     case 'my-deals':   return { name: 'my-deals',   params: {} };   // rep's own drafts + submissions
     case 'profile':    return { name: 'profile',    params: {} };   // user's own profile editor
     case 'faq':        return { name: 'faq',        params: { anchor: second || null } };
@@ -61,9 +66,10 @@ export function routeToHash(name, params = {}) {
     case 'bundles':    return '#/bundles';
     case 'favorites':  return '#/favorites';
     case 'deal':       {
-      // edit takes precedence over draft (can't do both at once)
+      // edit > draft > bundle in priority (can't combine)
       if (params.editQuoteId) return `#/deal?edit=${params.editQuoteId}`;
       if (params.draftId)     return `#/deal?draft=${params.draftId}`;
+      if (params.bundleId)    return `#/deal?bundle=${params.bundleId}`;
       return '#/deal';
     }
     case 'my-deals':   return '#/my-deals';

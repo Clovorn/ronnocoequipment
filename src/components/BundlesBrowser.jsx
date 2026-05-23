@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
 import BundleDetailView from './BundleDetailView.jsx';
 
-export default function BundlesBrowser({ canEdit }) {
+export default function BundlesBrowser({ canEdit, navigate }) {
   const [bundles, setBundles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -96,7 +96,12 @@ export default function BundlesBrowser({ canEdit }) {
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 md:gap-4">
               {filtered.map((bundle) => (
-                <BundleCard key={bundle.id} bundle={bundle} onClick={() => setSelectedBundle(bundle)} />
+                <BundleCard
+                  key={bundle.id}
+                  bundle={bundle}
+                  onClick={() => setSelectedBundle(bundle)}
+                  onStartDeal={() => navigate && navigate('deal', { bundleId: bundle.id })}
+                />
               ))}
             </div>
           )}
@@ -107,23 +112,28 @@ export default function BundlesBrowser({ canEdit }) {
         <BundleDetailView
           bundle={selectedBundle}
           onClose={() => setSelectedBundle(null)}
+          onStartDeal={() => {
+            const id = selectedBundle.id;
+            setSelectedBundle(null);
+            if (navigate) navigate('deal', { bundleId: id });
+          }}
         />
       )}
     </div>
   );
 }
 
-function BundleCard({ bundle, onClick }) {
-  const hasMonthly = bundle.monthly_lease_price != null;
-  const hasList = bundle.list_price != null;
-  const included = bundle.included_items_total;
-  const savings = hasList && included > 0 ? included - bundle.list_price : 0;
+function BundleCard({ bundle, onClick, onStartDeal }) {
+  // v27: bundles now use the computed pricing model. Show only the marketed
+  // "starts at" monthly fee from target_monthly_fee. No cash price.
+  // Falls back to legacy monthly_lease_price for any bundles that haven't
+  // been configured with target_monthly_fee yet.
+  const startsAt = bundle.target_monthly_fee ?? bundle.monthly_lease_price ?? null;
 
   return (
     <article
-      onClick={onClick}
-      className={`bg-white border rounded-lg p-4 md:p-5 cursor-pointer transition-all
-                  hover:shadow-card active:bg-navy-50
+      className={`bg-white border rounded-lg p-4 md:p-5 transition-all
+                  hover:shadow-card
                   ${bundle.featured ? 'border-accent-500/40 ring-1 ring-accent-500/20' : 'border-page-200'}`}
     >
       {bundle.featured && (
@@ -133,61 +143,55 @@ function BundleCard({ bundle, onClick }) {
         </div>
       )}
 
-      {bundle.image_url ? (
-        <img src={bundle.image_url} alt={bundle.name}
-             className="w-full h-32 object-contain rounded mb-3 bg-page-100" />
-      ) : (
-        <div className="w-full h-32 rounded mb-3 bg-gradient-to-br from-navy-100 to-page-100
-                        flex items-center justify-center">
-          <svg className="w-10 h-10 text-navy-300" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round"
-                  d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
-          </svg>
-        </div>
-      )}
-
-      <h3 className="text-base font-medium text-slate-900 leading-snug mb-1">
-        {bundle.name}
-      </h3>
-      {bundle.category && (
-        <p className="text-xs uppercase tracking-wider text-slate-500 mb-2">
-          {bundle.category}
-        </p>
-      )}
-      {bundle.description && (
-        <p className="text-sm text-slate-600 leading-relaxed mb-3 line-clamp-2">
-          {bundle.description}
-        </p>
-      )}
-
-      <div className="flex items-center justify-between gap-2 mt-3 pt-3 border-t border-page-100">
-        <div>
-          <div className="text-xs text-slate-500 mb-0.5">
-            {bundle.included_items_count} included
-            {bundle.optional_items_count > 0 && ` · ${bundle.optional_items_count} optional`}
-          </div>
-          <div className="flex items-baseline gap-2">
-            {hasMonthly && (
-              <span className="font-mono tabular-nums text-base font-medium text-navy-900">
-                ${bundle.monthly_lease_price.toLocaleString(undefined, { minimumFractionDigits: 0 })}
-                <span className="text-xs text-slate-500 font-sans font-normal">/mo</span>
-              </span>
-            )}
-            {hasList && (
-              <span className={`font-mono tabular-nums ${hasMonthly ? 'text-xs text-slate-500' : 'text-base font-medium text-navy-900'}`}>
-                {hasMonthly && 'or '}${bundle.list_price.toLocaleString(undefined, { minimumFractionDigits: 0 })}
-              </span>
-            )}
-          </div>
-        </div>
-        {savings > 0 && (
-          <div className="text-right">
-            <div className="text-[10px] uppercase tracking-wider text-accent-700 font-medium">Save</div>
-            <div className="text-sm font-mono tabular-nums text-accent-700 font-medium">
-              ${savings.toLocaleString(undefined, { minimumFractionDigits: 0 })}
-            </div>
+      <div onClick={onClick} className="cursor-pointer active:bg-navy-50 -mx-1 -mt-1 px-1 pt-1 rounded">
+        {bundle.image_url ? (
+          <img src={bundle.image_url} alt={bundle.name}
+               className="w-full h-32 object-contain rounded mb-3 bg-page-100" />
+        ) : (
+          <div className="w-full h-32 rounded mb-3 bg-gradient-to-br from-navy-100 to-page-100
+                          flex items-center justify-center">
+            <svg className="w-10 h-10 text-navy-300" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round"
+                    d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+            </svg>
           </div>
         )}
+
+        <h3 className="text-base font-medium text-slate-900 leading-snug mb-1">
+          {bundle.name}
+        </h3>
+        {bundle.category && (
+          <p className="text-xs uppercase tracking-wider text-slate-500 mb-2">
+            {bundle.category}
+          </p>
+        )}
+        {bundle.description && (
+          <p className="text-sm text-slate-600 leading-relaxed mb-3 line-clamp-2">
+            {bundle.description}
+          </p>
+        )}
+      </div>
+
+      <div className="mt-3 pt-3 border-t border-page-100">
+        <div className="flex items-baseline justify-between gap-2 mb-3">
+          <div className="text-xs text-slate-500">
+            {bundle.included_items_count} included
+          </div>
+          {startsAt != null && (
+            <div className="font-mono tabular-nums text-base font-medium text-navy-900">
+              <span className="text-xs text-slate-500 font-sans font-normal mr-1">starts at</span>
+              ${startsAt.toLocaleString(undefined, { minimumFractionDigits: 0 })}
+              <span className="text-xs text-slate-500 font-sans font-normal">/mo</span>
+            </div>
+          )}
+        </div>
+
+        <button
+          onClick={(e) => { e.stopPropagation(); onStartDeal?.(); }}
+          className="w-full px-3 py-2 bg-navy-900 text-chalk-50 text-sm font-medium rounded
+                     hover:bg-navy-800 transition-colors">
+          Start deal from this bundle →
+        </button>
       </div>
     </article>
   );

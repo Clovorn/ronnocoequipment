@@ -10,8 +10,16 @@ import { supabase } from '../lib/supabase.js';
  *
  * Calls onPick(equipment) when an item is chosen. The picker stays open
  * after each pick if `multiSelect` is true (caller handles closing).
+ *
+ * Bundle-mode filter (v27):
+ *   - allowedEquipmentIds: optional Set<uuid>. When provided, the picker
+ *     shows ONLY items whose id is in the set. Used by DealBuilder bundle
+ *     mode to restrict reps to bundle-eligible items + the bundle's
+ *     pre-loaded core items.
+ *   - scopeLabel: optional string shown in the header to explain the filter
+ *     (e.g. "Showing items eligible for this bundle").
  */
-export default function EquipmentPicker({ onPick, onClose, multiSelect = true }) {
+export default function EquipmentPicker({ onPick, onClose, multiSelect = true, allowedEquipmentIds = null, scopeLabel = null }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -40,9 +48,12 @@ export default function EquipmentPicker({ onPick, onClose, multiSelect = true })
     return [...set].sort();
   }, [items]);
 
-  // Filter by search + vendor
+  // Filter by search + vendor + (in bundle mode) by allowed equipment ids
   const filtered = useMemo(() => {
     let list = items;
+    if (allowedEquipmentIds instanceof Set && allowedEquipmentIds.size > 0) {
+      list = list.filter((it) => allowedEquipmentIds.has(it.id));
+    }
     if (vendorFilter) list = list.filter((it) => it.vendor === vendorFilter);
     if (!search.trim()) return list.slice(0, 100);
     const q = search.toLowerCase();
@@ -51,7 +62,7 @@ export default function EquipmentPicker({ onPick, onClose, multiSelect = true })
       (it.sku || '').toLowerCase().includes(q) ||
       (it.model || '').toLowerCase().includes(q)
     ).slice(0, 100);
-  }, [items, search, vendorFilter]);
+  }, [items, search, vendorFilter, allowedEquipmentIds]);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -73,6 +84,16 @@ export default function EquipmentPicker({ onPick, onClose, multiSelect = true })
             </svg>
           </button>
         </div>
+
+        {scopeLabel && (
+          <div className="px-4 py-2 bg-navy-50 border-b border-navy-100 text-xs text-navy-900 flex items-start gap-2">
+            <svg className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <circle cx="12" cy="12" r="10" />
+              <path d="M12 8v4M12 16h.01" />
+            </svg>
+            <span>{scopeLabel}</span>
+          </div>
+        )}
 
         <div className="p-3 border-b border-page-200 space-y-2">
           <input

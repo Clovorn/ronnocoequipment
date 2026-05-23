@@ -2,12 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   submitDealToPipeline, logDealActivity, isDealPipelineConfigured, generateQuoteNumber,
   fetchDealById, updateQuote, logDealRevision,
+  insertDealBundle, setDealTotalMonthly,
 } from '../lib/dealPipeline.js';
 import { fetchDraft, insertDraft, updateDraft, deleteDraft, defaultDraftName } from '../lib/draftStorage.js';
 import { LEASE_MIN_PRICE, LEASE_RATE } from '../lib/leasing.js';
 import { useLookupList } from '../lib/useLookupList.js';
 import { useFieldRequirements, validateAgainstRequirements, fieldMetaFor } from '../lib/useFieldRequirements.js';
 import { useDirector } from '../lib/useDirector.js';
+import { fetchBundleById, useBundleEligibleEquipment } from '../lib/useBundles.js';
+import { calculateBundlePricing, formatCurrency, formatMonthly, formatSoftCost } from '../lib/bundleMath.js';
 import { US_STATES } from '../lib/usStates.js';
 import EquipmentPicker from './EquipmentPicker.jsx';
 
@@ -245,7 +248,7 @@ function hydrateFromPipelineDeal(row, profile, session) {
 
 /* ───────────────────────── Main component ───────────────────────── */
 
-export default function DealBuilder({ profile, session, navigate, draftId = null, editQuoteId = null }) {
+export default function DealBuilder({ profile, session, navigate, draftId = null, editQuoteId = null, bundleId = null }) {
   const [draft, setDraft] = useState(() => makeBlankDraft(profile, session));
   const [equipmentItems, setEquipmentItems] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -302,6 +305,30 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
   const [editingQuote, setEditingQuote] = useState(null);
   const [resending, setResending] = useState(false);
   const editMode = Boolean(editingQuote);
+
+  /* ───── Bundle mode state (v27) ─────
+   * bundleConfig — the bundles row this deal is being built from, with its
+   *                math params (soft_cost_pct, service_reserve, lease_rate,
+   *                term_months) and identity (id, name, image_url, etc.).
+   *                Null when not in bundle mode.
+   * bundleMode   — convenience boolean derived from bundleConfig being set.
+   * bundleHydrating — true while we load the bundle and its default items.
+   * bundleError  — error string if the bundle could not be loaded.
+   *
+   * Bundle mode is mutually exclusive with edit and draft modes. The router
+   * resolves precedence (edit > draft > bundle) so we don't need to worry
+   * about competing hydrations here.
+   */
+  const [bundleConfig, setBundleConfig] = useState(null);
+  const [bundleHydrating, setBundleHydrating] = useState(Boolean(bundleId) && !draftId && !editQuoteId);
+  const [bundleError, setBundleError] = useState(null);
+  const bundleMode = Boolean(bundleConfig);
+
+  // Bundle-eligible equipment pool — fetched once for the picker filter.
+  // Lenient mode (per spec): we'll merge this with the bundle's default
+  // equipment ids so reps can re-add any item that was originally in the
+  // bundle even if it isn't separately flagged bundle_eligible.
+  const { ids: eligibleIds } = useBundleEligibleEquipment({ enabled: bundleMode });
 
   /**
    * Hydrate an existing draft when the page mounts with ?draft=<uuid> in the
@@ -432,6 +459,89 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
   // notification workflows know who to email. If the rep has no director
   // assigned, this returns null and the deal submits with null director columns.
   const { director: myDirector, loading: directorLoading } = useDirector();
+
+  /**
+   * Hydrate from a bundle when the page mounts with ?bundle=<uuid> in the URL.
+   * v27: bundle mode is mutually exclusive with edit and draft modes. The
+   * router resolves precedence (edit > draft > bundle) but we short-circuit
+   * defensively here too.
+   *
+   * What this does:
+   *   1. Load the bundle config from catalog (math params, name, etc.)
+   *   2. Load the bundle's included items as the starting equipment list
+   *   3. Force deal_type to "Lease Equipment" (locked in bundle mode)
+   *
+   * On error, leave the deal in "fell back to blank" state with a banner so
+   * the rep isn't stuck — they can still build a deal manually.
+   */
+  useEffect(() => {
+    if (!bundleId || draftId || editQuoteId) {
+      setBundleHydrating(false);
+      return;
+    }
+    let cancelled = false;
+    setBundleHydrating(true);
+    setBundleError(null);
+
+    fetchBundleById(bundleId)
+      .then(({ bundle, items, error }) => {
+        if (cancelled) return;
+        if (error) {
+          setBundleError(error);
+          setBundleHydrating(false);
+          return;
+        }
+        if (!bundle) {
+          setBundleError('Bundle not found.');
+          setBundleHydrating(false);
+          return;
+        }
+        setBundleConfig(bundle);
+        // Pre-load the bundle's default equipment as the starting deal items.
+        setEquipmentItems(items);
+        // Lock the deal_type to Lease in bundle mode. The UI surfaces this
+        // as a read-only chip alongside the bundle name.
+        setDraft((prev) => ({ ...prev, deal_type: 'Lease Equipment' }));
+        setBundleHydrating(false);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setBundleError(err.message || String(err));
+        setBundleHydrating(false);
+      });
+
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bundleId]);
+
+  /* ───── Bundle pricing computation ─────
+   * Live calculation of the bundle math against the current equipment list.
+   * Recomputes every time equipment changes. Used for the rep-side breakdown
+   * UI, the eligibility check, and the snapshot stored on submit.
+   */
+  const bundlePricing = useMemo(() => {
+    if (!bundleConfig) return null;
+    return calculateBundlePricing({ bundle: bundleConfig, equipment: equipmentItems });
+  }, [bundleConfig, equipmentItems]);
+
+  /* ───── Bundle-mode allowed equipment ─────
+   * Lenient mode: the EquipmentPicker shows items that are EITHER
+   *   (a) bundle_eligible = true in the catalog, OR
+   *   (b) already in the deal (so removed items can be re-added)
+   *
+   * This means a rep can substitute add-ons freely and can also undo a
+   * removal of a core bundle item.
+   */
+  const allowedEquipmentIds = useMemo(() => {
+    if (!bundleMode) return null;
+    const set = new Set(eligibleIds || []);
+    // Always allow items currently in the deal so the rep can adjust qty
+    // even if a previously-bundle-eligible item gets un-flagged later.
+    for (const it of equipmentItems) {
+      if (it.equipment_id) set.add(it.equipment_id);
+    }
+    return set;
+  }, [bundleMode, eligibleIds, equipmentItems]);
 
   /**
    * meta(fieldKey) → { visible, required, isOptional, knownToRules }
@@ -683,6 +793,61 @@ ${repName}`;
     return `mailto:${encodeURIComponent(customerEmail || '')}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
   }
 
+  /**
+   * Persist the bundle snapshot for a freshly-inserted deal (v27).
+   *
+   * Called from both submitDeal and submitAsQuote after the deal row exists.
+   * Writes the deal_bundles row using the live computed pricing as the
+   * point-in-time snapshot, and updates the deals.total_monthly_charged
+   * rollup.
+   *
+   * Best-effort: returns true on full success, false otherwise. The caller
+   * surfaces errors to the rep but does NOT block success — the deal was
+   * already inserted and the customer-facing data is preserved in
+   * raw_csv.equipment_items as a fallback.
+   */
+  async function persistBundleSnapshot(dealId) {
+    if (!bundleMode || !bundleConfig || !bundlePricing) return true;
+
+    const snapshot = {
+      deal_id:                 dealId,
+      position:                1,
+      bundle_id:               bundleConfig.id,
+      bundle_name:             bundleConfig.name,
+      bundle_soft_cost_pct:    bundlePricing.softCostPct,
+      bundle_service_reserve:  bundlePricing.serviceReserve,
+      bundle_term_months:      bundlePricing.termMonths,
+      bundle_lease_rate:       bundlePricing.leaseRate,
+      hardware_total:          Number(bundlePricing.hardware.toFixed(2)),
+      lease_basis:             Number(bundlePricing.leaseBasis.toFixed(2)),
+      monthly_raw:             Number(bundlePricing.monthlyRaw.toFixed(2)),
+      monthly_charged:         bundlePricing.monthlyCharged,
+      equipment:               equipmentItems.map((it) => ({
+        equipment_id: it.equipment_id,
+        sku:          it.sku,
+        description:  it.description,
+        model:        it.model,
+        list_price:   it.list_price,
+        quantity:     it.quantity,
+        from_bundle:  !!it.from_bundle,
+      })),
+    };
+
+    const { error: insertErr } = await insertDealBundle(snapshot);
+    if (insertErr) {
+      console.warn('Could not insert deal_bundles snapshot:', insertErr);
+      return false;
+    }
+
+    // Update the rollup. Single-bundle today, so total === monthly_charged.
+    const { error: rollupErr } = await setDealTotalMonthly(dealId, bundlePricing.monthlyCharged);
+    if (rollupErr) {
+      console.warn('Could not set deals.total_monthly_charged:', rollupErr);
+      // Snapshot is in; rollup is secondary. Don't fail.
+    }
+    return true;
+  }
+
   async function submitDeal() {
     setError(null);
     const validationError = validate('deal');
@@ -718,6 +883,16 @@ ${repName}`;
       `Submitted via Ronnoco Deal Builder (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
       pipelinePayload.sales_rep
     );
+
+    // v27: if this is a bundle deal, snapshot the bundle math into deal_bundles.
+    // Best-effort — surfaces a non-blocking warning on failure but the deal
+    // itself is already inserted, so the rep's primary action succeeded.
+    if (bundleMode) {
+      const ok = await persistBundleSnapshot(deal.id);
+      if (!ok) {
+        console.warn('Bundle snapshot failed; deal exists in pipeline without bundle row.');
+      }
+    }
 
     // Draft → done. Best-effort delete: if it fails, the deal still exists
     // in the pipeline so the rep's primary action succeeded. The orphan draft
@@ -803,6 +978,14 @@ ${repName}`;
       `${quoteNumber} sent to ${draft.contact_email} (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
       pipelinePayload.sales_rep
     );
+
+    // v27: bundle snapshot for bundle-mode quotes too.
+    if (bundleMode) {
+      const ok = await persistBundleSnapshot(deal.id);
+      if (!ok) {
+        console.warn('Bundle snapshot failed on quote; quote exists without bundle row.');
+      }
+    }
 
     // Same as direct-deal: draft → quote means the draft has served its
     // purpose. Best-effort delete; if it fails the rep can clean up later.
@@ -1354,6 +1537,46 @@ ${repName}`;
         </div>
       )}
 
+      {/* Bundle-mode banner (v27) — shown when the rep arrives via "Start
+          deal from this bundle". Communicates that they're building under
+          the bundle's lease math and that deal_type is locked. */}
+      {bundleMode && bundleConfig && (
+        <div className="mb-4 bg-navy-50 border border-navy-200 rounded-lg p-4">
+          <div className="flex items-start gap-3">
+            {bundleConfig.image_url ? (
+              <img src={bundleConfig.image_url} alt="" className="w-12 h-12 object-contain rounded bg-white border border-page-200 flex-shrink-0" />
+            ) : (
+              <div className="w-12 h-12 rounded bg-white border border-page-200 flex items-center justify-center flex-shrink-0">
+                <svg className="w-6 h-6 text-navy-400" fill="none" stroke="currentColor" strokeWidth="1.5" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round"
+                        d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4" />
+                </svg>
+              </div>
+            )}
+            <div className="text-sm min-w-0 flex-1">
+              <div className="text-[10px] uppercase tracking-[0.18em] text-navy-700 font-medium mb-0.5">
+                Distributor Program Bundle
+              </div>
+              <div className="font-medium text-slate-900 mb-1">{bundleConfig.name}</div>
+              <p className="text-slate-600 leading-relaxed">
+                Deal type is locked to <span className="font-mono">Lease Equipment</span>.
+                Equipment substitutions are limited to bundle-eligible items.
+                The customer's monthly is computed from the equipment list using the
+                bundle's soft-cost and reserve.
+              </p>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Bundle hydration error (rare — bundle id in URL didn't resolve) */}
+      {bundleError && (
+        <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded text-xs text-red-700">
+          Couldn't load that bundle: {bundleError}. You can continue and build a non-bundle deal,
+          or go back to the bundles page and pick another.
+        </div>
+      )}
+
       {/* ─── Section: Sales Rep & Submission ─── */}
       <Section title="Sales Rep & Submission">
         <FieldGrid cols={2}>
@@ -1584,13 +1807,45 @@ ${repName}`;
         </Section>
       )}
 
+      {/* ─── Section: Bundle Pricing (v27) ─── */}
+      {/* In bundle mode, show the distributor-bundle math: hardware, soft
+          cost, service reserve, lease basis, monthly raw, and the rounded
+          customer monthly. The customer never sees this breakdown — it's
+          here to make the math legible to the rep so they understand what
+          their substitutions are doing to the monthly. */}
+      {bundleMode && bundlePricing && (
+        <Section
+          title={`Bundle Pricing — ${bundleConfig?.name || ''}`}
+        >
+          <BundlePricingBreakdown
+            bundle={bundleConfig}
+            pricing={bundlePricing}
+          />
+        </Section>
+      )}
+
       {/* ─── Section: Equipment & Deal Info ─── */}
       {/* Equipment selection is the heart of the quote — the customer absolutely
           needs to see what's being quoted. Deal Type (lease vs purchase) and the
           two financial fields (last-3-month coffee spend, expected monthly
           sales) are leasing-team inputs not relevant on the customer-facing quote. */}
       <Section title="Equipment & Deal Information">
-        {submitMode === 'deal' && (
+        {submitMode === 'deal' && bundleMode && (
+          <div className="mb-4">
+            <Label>Deal Type</Label>
+            <div className="mt-1 inline-flex items-center gap-2 px-3 py-1.5 rounded-full
+                            bg-navy-50 border border-navy-200 text-sm text-navy-900">
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M12 11c0-1.5 1-2.5 2.5-2.5S17 9.5 17 11v2H7v-2c0-3 2-5 5-5s5 2 5 5M5 13h14v8H5z" />
+              </svg>
+              <span>Lease Equipment</span>
+              <span className="text-[10px] uppercase tracking-wider text-slate-500 ml-1">
+                · Locked by bundle
+              </span>
+            </div>
+          </div>
+        )}
+        {submitMode === 'deal' && !bundleMode && (
           <div className="mb-4">
             <Label required>Deal Type</Label>
             <div className="flex flex-wrap gap-2 mt-1">
@@ -1738,7 +1993,11 @@ ${repName}`;
       </Section>
 
       {/* ─── Deal Summary ─── */}
-      {equipmentItems.length > 0 && (
+      {/* In bundle mode the Bundle Pricing section above is the summary
+          (correct soft-cost-aware math). DealSummary uses the per-item
+          0.0395 lease rate without soft cost, which would mislead in bundle
+          context, so we suppress it. */}
+      {equipmentItems.length > 0 && !bundleMode && (
         <DealSummary
           total={dealTotal}
           monthlyEstimate={monthlyEstimate}
@@ -1875,17 +2134,33 @@ ${repName}`;
               {resending ? 'Re-sending…' : 'Re-send quote →'}
             </button>
           ) : submitMode === 'quote' ? (
-            <button onClick={submitAsQuote} disabled={submitting || !isDealPipelineConfigured}
-                    className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
-                               hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
-                               transition-colors whitespace-nowrap">
+            <button
+              onClick={submitAsQuote}
+              disabled={submitting || !isDealPipelineConfigured || (bundleMode && bundlePricing && !bundlePricing.eligible)}
+              title={
+                bundleMode && bundlePricing && !bundlePricing.eligible
+                  ? `Bundle is below the ${formatUSD(LEASE_MIN_PRICE)} lease floor. Add equipment to qualify.`
+                  : undefined
+              }
+              className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
+                         hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
+                         transition-colors whitespace-nowrap"
+            >
               {submitting ? 'Submitting…' : 'Submit as Quote →'}
             </button>
           ) : (
-            <button onClick={submitDeal} disabled={submitting || !isDealPipelineConfigured}
-                    className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
-                               hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
-                               transition-colors whitespace-nowrap">
+            <button
+              onClick={submitDeal}
+              disabled={submitting || !isDealPipelineConfigured || (bundleMode && bundlePricing && !bundlePricing.eligible)}
+              title={
+                bundleMode && bundlePricing && !bundlePricing.eligible
+                  ? `Bundle is below the ${formatUSD(LEASE_MIN_PRICE)} lease floor. Add equipment to qualify.`
+                  : undefined
+              }
+              className="px-6 py-3 bg-navy-900 text-chalk-50 font-medium rounded
+                         hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
+                         transition-colors whitespace-nowrap"
+            >
               {submitting ? 'Submitting…' : 'Submit Deal →'}
             </button>
           )}
@@ -1900,6 +2175,12 @@ ${repName}`;
 
       {pickerOpen && (
         <EquipmentPicker
+          allowedEquipmentIds={allowedEquipmentIds}
+          scopeLabel={
+            bundleMode
+              ? `Showing equipment eligible for the ${bundleConfig?.name || ''} bundle and any item already on the deal.`
+              : null
+          }
           onPick={(eq) => {
             setEquipmentItems((prev) => {
               const existing = prev.findIndex((it) => it.equipment_id === eq.id);
@@ -1914,6 +2195,9 @@ ${repName}`;
                 vendor: eq.vendor || null,
                 list_price: eq.list_price,
                 quantity: 1,
+                // v27: items added in bundle mode after the initial hydration
+                // are add-ons rather than part of the bundle's defaults.
+                from_bundle: false,
               }];
             });
             markDraftDirty();
@@ -1922,6 +2206,111 @@ ${repName}`;
           onClose={() => setPickerOpen(false)}
         />
       )}
+    </div>
+  );
+}
+
+/* ───────────────────────── Bundle Pricing Breakdown (v27) ───────────────────────── */
+/**
+ * Rep-facing math breakdown for a bundle deal. Shows:
+ *   - Hardware total (sum of equipment list prices × quantity)
+ *   - Soft cost ($ + %)
+ *   - Service & media reserve ($)
+ *   - Lease basis (subtotal)
+ *   - Monthly raw (lease basis × lease_rate)
+ *   - Customer monthly (rounded to whole dollar — what the customer pays)
+ *   - Eligibility chip
+ *
+ * The customer never sees this — it lives only in the rep's view of the
+ * Deal Builder so they understand how substitutions move the monthly.
+ */
+function BundlePricingBreakdown({ bundle, pricing }) {
+  const target = bundle?.target_monthly_fee != null && bundle?.target_monthly_fee !== ''
+    ? Number(bundle.target_monthly_fee)
+    : null;
+
+  return (
+    <div className="bg-page-50 border border-page-200 rounded-lg p-4 md:p-5">
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-slate-600 leading-relaxed max-w-md">
+          The customer sees only the rounded monthly. The breakdown below is for your
+          reference as you adjust equipment.
+        </p>
+        {pricing.eligible ? (
+          <span className="text-[10px] uppercase tracking-wider font-bold text-ok bg-ok/10 px-2 py-0.5 rounded whitespace-nowrap">
+            ✓ Qualifies for lease
+          </span>
+        ) : (
+          <span className="text-[10px] uppercase tracking-wider font-bold text-bad bg-red-50 px-2 py-0.5 rounded whitespace-nowrap">
+            ✗ Below {formatCurrency(LEASE_MIN_PRICE)}
+          </span>
+        )}
+      </div>
+
+      <div className="space-y-1.5 text-sm font-mono tabular-nums">
+        <BundleBreakdownRow label="Hardware total" value={formatCurrency(pricing.hardware)} />
+        <BundleBreakdownRow
+          label={`Soft cost (${formatSoftCost(pricing.softCostPct)})`}
+          value={formatCurrency(pricing.softCost)}
+        />
+        <BundleBreakdownRow
+          label="Service & media reserve"
+          value={formatCurrency(pricing.reserve)}
+          muted
+        />
+        <div className="border-t border-page-200 my-1.5" />
+        <BundleBreakdownRow
+          label="Lease basis"
+          value={formatCurrency(pricing.leaseBasis)}
+          bold
+        />
+        <BundleBreakdownRow
+          label={`Monthly raw (× ${pricing.leaseRate})`}
+          value={formatCurrency(pricing.monthlyRaw)}
+          muted
+        />
+        <BundleBreakdownRow
+          label="Customer monthly (rounded)"
+          value={formatMonthly(pricing.monthlyCharged)}
+          bold
+          highlight
+        />
+      </div>
+
+      {target != null && Number.isFinite(target) && (
+        <p className="mt-3 text-[11px] text-slate-600 leading-relaxed">
+          Marketed starting fee: <span className="font-mono">{formatMonthly(target)}/mo</span>.{' '}
+          {target === pricing.monthlyCharged
+            ? <span className="text-ok">Customer monthly matches the marketed tier.</span>
+            : (
+              <>
+                Customer monthly:{' '}
+                <span className="font-mono font-medium text-slate-700">
+                  {formatMonthly(pricing.monthlyCharged)}/mo
+                </span>
+                {' '}({pricing.monthlyCharged > target ? '+' : '−'}${Math.abs(pricing.monthlyCharged - target).toLocaleString()} from tier).
+              </>
+            )}
+        </p>
+      )}
+
+      {!pricing.eligible && pricing.eligibilityShortfall > 0 && (
+        <p className="mt-3 text-[11px] text-bad leading-relaxed">
+          Add about <span className="font-mono">{formatCurrency(pricing.eligibilityShortfall / (1 + pricing.softCostPct))}</span>
+          {' '}more in hardware to clear the {formatCurrency(LEASE_MIN_PRICE)} lease floor.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function BundleBreakdownRow({ label, value, bold, muted, highlight }) {
+  return (
+    <div className={`flex items-center justify-between ${highlight ? 'bg-navy-50 -mx-2 px-2 py-1 rounded' : ''}`}>
+      <span className={`${muted ? 'text-slate-500' : 'text-slate-700'} text-xs`}>{label}</span>
+      <span className={`${bold ? 'font-semibold text-slate-900' : muted ? 'text-slate-500' : 'text-slate-700'}`}>
+        {value}
+      </span>
     </div>
   );
 }
