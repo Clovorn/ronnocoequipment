@@ -39,12 +39,21 @@ export default function BundlesBrowser({ canEdit }) {
         <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">
           Catalog
         </p>
-        <h1 className="text-2xl md:text-3xl font-light text-slate-900 mb-4">
-          Bundles
+        <h1 className="text-2xl md:text-3xl font-light text-slate-900 mb-3">
+          Distributor Program Bundles
           <span className="ml-2 md:ml-3 text-sm md:text-base text-slate-500 font-normal">
             {filtered.length}
           </span>
         </h1>
+
+        <p className="text-sm text-slate-600 leading-relaxed max-w-3xl mb-5">
+          These bundles are specifically related to branded equipment packages
+          connected to Distributor Programs (such as My Daily Crave, Java Select,
+          Coffee House, and more). Each bundle includes the equipment listed for
+          the monthly fee associated. Customers in these programs start with the
+          base program and add equipment on top of the package, in addition to
+          the base bundle cost.
+        </p>
 
         <div className="relative max-w-md">
           <input
