@@ -22,6 +22,15 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+/* Keep the mobile bottom nav visually pinned to the viewport edge,
+   especially on iOS where the browser chrome and safe-area inset can
+   make fixed footers appear to float or scroll away at page bottom. */
+@supports (padding: env(safe-area-inset-bottom)) {
+  .mobile-bottom-nav {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+}
+
 /* Selection highlight in accent amber */
 ::selection {
   background: theme('colors.accent.500');

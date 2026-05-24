@@ -36,7 +36,7 @@ export default function Shell({ profile, session, routeName, navigate, children 
   const isDealActive = activeTab === 'deal';
 
   return (
-    <div className="min-h-screen bg-page-50 pb-16 md:pb-0">
+    <div className="min-h-screen bg-page-50 pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-0">
       <header className="bg-navy-900 text-chalk-50 shadow-navbar sticky top-0 z-30">
         <div className="px-4 md:px-6 lg:px-10 py-3 md:py-4 flex items-center justify-between gap-4">
           <button onClick={() => navigate('home')}
@@ -95,13 +95,13 @@ export default function Shell({ profile, session, routeName, navigate, children 
         </div>
       </header>
 
-      <main>{children}</main>
+      <main className="min-h-[calc(100vh-4rem)] md:min-h-0">{children}</main>
 
       {/* Mobile bottom tab bar. Grid column count = visible tab count + 1
           (the +1 is the New Deal button below the map). With My Team and FAQ
           moved into the user menu, mobile stays a clean 5-cell layout. */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-page-200 z-40
-                      shadow-[0_-2px_8px_rgba(10,31,61,0.05)]">
+      <nav className="md:hidden fixed inset-x-0 bottom-0 bg-white border-t border-page-200 z-40
+                      pb-[env(safe-area-inset-bottom)] shadow-[0_-2px_8px_rgba(10,31,61,0.05)] mobile-bottom-nav">
         <div className="grid grid-cols-5">
           {visibleTabs.map((t) => {
             const Icon = t.icon;

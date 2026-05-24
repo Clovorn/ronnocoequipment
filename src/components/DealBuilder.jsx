@@ -2311,7 +2311,6 @@ ${repName}`;
  *   - Soft cost ($ + %)
  *   - Service & media reserve ($)
  *   - Lease basis (subtotal)
- *   - Monthly raw (lease basis × lease_rate)
  *   - Customer monthly (rounded to whole dollar — what the customer pays)
  *   - Eligibility chip
  *
@@ -2357,11 +2356,6 @@ function BundlePricingBreakdown({ bundle, pricing }) {
           label="Lease basis"
           value={formatCurrency(pricing.leaseBasis)}
           bold
-        />
-        <BundleBreakdownRow
-          label={`Monthly raw (× ${pricing.leaseRate})`}
-          value={formatCurrency(pricing.monthlyRaw)}
-          muted
         />
         <BundleBreakdownRow
           label="Customer monthly (rounded)"
