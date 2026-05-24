@@ -46,6 +46,13 @@ export const PHASE_STEPS = {
     'paperwork_received',
     'funded',
   ],
+  // v31: Director-approval phase. Purchase and Loan decisions from a quote
+  // land here for the rep's assigned director to approve or reject before
+  // the deal moves to ops. Single step — the deal is either approved (and
+  // advances), rejected (terminal-ish, can be resubmitted), or still pending.
+  pending_director: [
+    'awaiting_review',
+  ],
   ops: [
     'customer_setup',
     'equip_ordered',
@@ -76,6 +83,8 @@ export const STEP_LABELS = {
   paperwork_sent: 'Paperwork Sent',
   paperwork_received: 'Paperwork Received',
   funded: 'Funded',
+  // Pending-director (v31)
+  awaiting_review: 'Awaiting Director Review',
   // Ops
   customer_setup: 'Customer Setup',
   equip_ordered: 'Equip Ordered',
@@ -93,6 +102,7 @@ export const STEP_LABELS = {
 export const PHASE_LABELS = {
   sales: 'Sales',
   leasing: 'Financing',  // dashboard tab says "In Financing"; we call it Financing
+  pending_director: 'Director Review',
   ops: 'Operations',
 };
 
@@ -103,16 +113,70 @@ export const PHASE_LABELS = {
  * the deal in is encoded here so the recordCustomerDecision handler stays
  * declarative — adding a new decision type only requires adding a row.
  *
+ * v31 change: purchase and loan no longer jump straight to ops. They now
+ * land in `pending_director` (step `awaiting_review`) so the rep's assigned
+ * director can approve before the deal moves into operations. Once the
+ * director approves, the deal advances to ops/customer_setup via approveDeal()
+ * in dealPipeline.js. Lease and finance still go to leasing/submitted as
+ * before — those go through the lender's credit review, not director review.
+ *
  * 'pending' is the default before the customer responds and isn't in this
  * map (it's not a "decision" yet, just absence of one).
  */
 export const DECISIONS = [
-  { value: 'lease',    label: 'Accepted — Lease',    nextPhase: 'leasing', nextStep: 'submitted' },
-  { value: 'finance',  label: 'Accepted — Finance',  nextPhase: 'leasing', nextStep: 'submitted' },
-  { value: 'purchase', label: 'Accepted — Purchase', nextPhase: 'ops',     nextStep: 'customer_setup' },
-  { value: 'loan',     label: 'Accepted — Loan',     nextPhase: 'ops',     nextStep: 'customer_setup' },
-  { value: 'declined', label: 'Declined',            nextPhase: null,      nextStep: null, closed: true },
+  { value: 'lease',    label: 'Accepted — Lease',    nextPhase: 'leasing',          nextStep: 'submitted' },
+  { value: 'finance',  label: 'Accepted — Finance',  nextPhase: 'leasing',          nextStep: 'submitted' },
+  { value: 'purchase', label: 'Accepted — Purchase', nextPhase: 'pending_director', nextStep: 'awaiting_review' },
+  { value: 'loan',     label: 'Accepted — Loan',     nextPhase: 'pending_director', nextStep: 'awaiting_review' },
+  { value: 'declined', label: 'Declined',            nextPhase: null,               nextStep: null, closed: true },
 ];
+
+/* ─────────────── Director decision constants (v31) ─────────────── */
+
+/**
+ * What a director can do with a deal sitting in `pending_director`. Mirrors
+ * the shape of DECISIONS so consumers can treat the two uniformly.
+ *
+ *   - approved → deal advances to ops/customer_setup, deal_status stays 'active'
+ *   - rejected → deal stays in pending_director (so it doesn't disappear from
+ *                the rep's My Deals stepper), but deal_status flips to
+ *                'rejected'. The rep can then resubmit, which clears the
+ *                rejection and bumps resubmission_count.
+ *
+ * A reason note is OPTIONAL on approve, REQUIRED on reject (enforced in the
+ * UI — the DB doesn't constrain this so a director with direct DB access
+ * isn't blocked).
+ */
+export const DIRECTOR_DECISIONS = [
+  { value: 'approved', label: 'Approve',  nextPhase: 'ops',              nextStep: 'customer_setup', requiresNotes: false },
+  { value: 'rejected', label: 'Reject',   nextPhase: 'pending_director', nextStep: 'awaiting_review', requiresNotes: true },
+];
+
+/**
+ * True when a deal's customer decision means it needs director approval.
+ * Used by the UI to decide whether to show the "pending director" badge,
+ * and by dealPipeline.js to know whether to stamp rep_director_email at
+ * decision time.
+ */
+export function requiresDirectorApproval(customerDecision) {
+  return customerDecision === 'purchase' || customerDecision === 'loan';
+}
+
+/**
+ * True when the deal type / mode is eligible to be sent out as a customer
+ * quote. Used by DealBuilder to gate the "Submit as Quote" button.
+ *
+ * v31: Loan Equipment is NOT quoteable. A loan is an internal arrangement
+ * (Ronnoco-owned equipment, no money changes hands monthly), so there's
+ * nothing for the customer to "accept" via a quote page. Loan deals go
+ * directly through the deal flow (which routes through director review
+ * via the existing purchase/loan customer_decision path), they don't
+ * generate a customer-facing quote.
+ */
+export function isQuoteable(dealType) {
+  if (!dealType) return true;   // empty/unset: allow, validate later
+  return dealType !== 'Loan Equipment';
+}
 
 /* ─────────────── Stepper helpers ─────────────── */
 

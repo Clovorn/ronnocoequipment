@@ -44,6 +44,7 @@ function parseRoute(hash) {
                                   bundleId:    query.get('bundle') || null,
                                 } };
     case 'my-deals':   return { name: 'my-deals',   params: {} };   // rep's own drafts + submissions
+    case 'my-team':    return { name: 'my-team',    params: {} };   // director's approval queue (v31)
     case 'profile':    return { name: 'profile',    params: {} };   // user's own profile editor
     case 'faq':        return { name: 'faq',        params: { anchor: second || null } };
     case 'vendor':     return { name: 'vendor',     params: { slug: second || null } };
@@ -73,6 +74,7 @@ export function routeToHash(name, params = {}) {
       return '#/deal';
     }
     case 'my-deals':   return '#/my-deals';
+    case 'my-team':    return '#/my-team';
     case 'profile':    return '#/profile';
     case 'faq':        return params.anchor ? `#/faq/${params.anchor}` : '#/faq';
     case 'vendors':    return '#/vendors';

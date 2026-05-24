@@ -432,3 +432,272 @@ export async function fetchDealBundle(dealId) {
   }
   return { bundle: data, error: null };
 }
+
+/* ───────────────────────── v31: Director Approval ───────────────────────── */
+
+/**
+ * Fetch every deal a director has authority over — currently scoped to deals
+ * whose `rep_director_email` matches the director's own email. This is the
+ * data source for the MyTeamPage approval queue.
+ *
+ * Why email and not user_id: same reason as fetchMyDeals — the pipeline DB
+ * doesn't know about catalog auth users. The rep_director_email column is
+ * stamped at deal-submission time from the rep's useDirector() result, so
+ * the linkage is by email.
+ *
+ * Filtering:
+ *   - When `scope = 'mine'` (default), returns deals where rep_director_email
+ *     matches the caller's email. This is the director's own queue.
+ *   - When `scope = 'all'`, returns every deal currently in pending_director
+ *     OR with director_decision in (approved, rejected). This is for admins
+ *     who need the cross-director view. The email arg is ignored in this mode.
+ *
+ * The projection mirrors fetchMyDeals plus the director-decision columns so
+ * the MyTeamPage can render the queue and the rep-grouped tables without a
+ * second round-trip.
+ */
+export async function fetchTeamDeals(directorEmail, { scope = 'mine' } = {}) {
+  if (!dealPipeline) {
+    return { data: [], error: { message: 'Deal pipeline not configured.' } };
+  }
+  if (scope === 'mine' && !directorEmail) {
+    // No email and asking for a scoped view = empty result. Safer than dumping
+    // every pending-approval deal when the auth state is half-loaded.
+    return { data: [], error: null };
+  }
+
+  const columns = `
+    id,
+    is_quote, quote_number,
+    customer_decision, customer_decision_at, customer_decision_notes,
+    director_decision, director_decision_at, director_decision_by, director_decision_notes,
+    rep_director_email, resubmission_count,
+    current_step, phase, deal_status,
+    first_name, last_name, contact_name, contact_email,
+    store_name, city, state,
+    deal_type, total_eq_cost, total_monthly_charged,
+    sales_rep, sales_rep_email,
+    raw_csv, equipment_selection,
+    created_at, updated_at
+  `;
+
+  let query = dealPipeline.from('deals').select(columns);
+
+  if (scope === 'all') {
+    // Admin view: every deal that has touched the director phase, plus any
+    // currently-pending. Using .or() lets us pull historical decisions
+    // alongside the live queue in a single fetch.
+    query = query.or('phase.eq.pending_director,director_decision.eq.approved,director_decision.eq.rejected');
+  } else {
+    query = query.eq('rep_director_email', directorEmail);
+  }
+
+  const { data, error } = await query.order('customer_decision_at', { ascending: false, nullsFirst: false });
+  return { data: data || [], error };
+}
+
+/**
+ * Shared internal helper for the two director actions (approve/reject) and
+ * the rep resubmit action. Wraps the canonical sequence:
+ *
+ *   1. UPDATE deals SET <patch>, updated_at = now()
+ *   2. INSERT deal_revisions (audit trail row)
+ *   3. INSERT deal_activity  (human-readable feed for the dashboard)
+ *
+ * Returns { data: <updated row>, error }. If the UPDATE fails the secondary
+ * writes are skipped; if the audit/activity writes fail, they're logged but
+ * the primary success still surfaces (matches the pattern of
+ * recordCustomerDecision elsewhere in this file).
+ */
+async function _directorDecision({ dealId, patch, revisionPatch, activityAction, activityDetail, actor, currentRevision }) {
+  if (!dealPipeline) {
+    return { data: null, error: { message: 'Deal pipeline not configured.' } };
+  }
+  if (!dealId) {
+    return { data: null, error: { message: 'Missing deal id.' } };
+  }
+
+  const now = new Date().toISOString();
+  const fullPatch = { ...patch, updated_at: now };
+
+  // 1) Primary update
+  const { data: updated, error: updErr } = await dealPipeline
+    .from('deals')
+    .update(fullPatch)
+    .eq('id', dealId)
+    .select()
+    .single();
+  if (updErr) return { data: null, error: updErr };
+
+  // 2) Audit log — best-effort. Don't fail the decision on a logging error.
+  await logDealRevision({
+    dealId,
+    revision: (currentRevision || 0) + 1,
+    changedBy: actor,
+    changeKind: revisionPatch.changeKind,
+    diff: revisionPatch.diff || {},
+    notes: revisionPatch.notes || null,
+  });
+
+  // 3) Human-readable activity feed entry
+  await logDealActivity(dealId, activityAction, activityDetail, actor);
+
+  return { data: updated, error: null };
+}
+
+/**
+ * Director approves a deal sitting in pending_director.
+ *
+ * Effects:
+ *   - phase → ops, current_step → customer_setup (deal moves into ops queue)
+ *   - director_decision → 'approved', director_decision_at/by/notes set
+ *   - deal_status stays 'active' (approval is a forward move, not a state change)
+ *
+ * `notes` is optional on approve — the director can add context but isn't
+ * required to. `actor` is whatever string the caller wants stamped on the
+ * audit row (typically the director's display_name or email).
+ *
+ * `currentRevision` is the deal's existing quote_revision value (since we
+ * reuse that column as a monotonic revision counter across all change kinds).
+ * Pass 0 if you don't have it; the audit row just gets revision=1.
+ */
+export async function approveDeal({ dealId, notes, actor, currentRevision }) {
+  const decision = DIRECTOR_DECISIONS_FOR_RUNTIME.approved;
+  const now = new Date().toISOString();
+  return _directorDecision({
+    dealId,
+    currentRevision,
+    patch: {
+      director_decision: 'approved',
+      director_decision_at: now,
+      director_decision_by: actor || null,
+      director_decision_notes: notes?.trim() || null,
+      phase: decision.nextPhase,
+      current_step: decision.nextStep,
+      deal_status: 'active',
+    },
+    revisionPatch: {
+      changeKind: 'director_approval',
+      diff: { decision: 'approved', next_phase: decision.nextPhase, next_step: decision.nextStep },
+      notes: notes?.trim() || null,
+    },
+    activityAction: 'Director approved',
+    activityDetail: `${actor || 'Director'} approved — deal advanced to ${decision.nextPhase} (${decision.nextStep})`,
+    actor,
+  });
+}
+
+/**
+ * Director rejects a deal sitting in pending_director.
+ *
+ * Effects:
+ *   - phase stays 'pending_director', current_step stays 'awaiting_review'
+ *     (so the deal still shows up in the rep's My Deals with the right
+ *     stepper context — they need to see what happened to fix it)
+ *   - director_decision → 'rejected', director_decision_at/by/notes set
+ *   - deal_status flips to 'rejected' (this is what tells the rep's
+ *     MyDealsPage to render the rejection banner with the Revise CTA)
+ *
+ * `notes` is REQUIRED here (UI enforced). The caller should validate before
+ * invoking this; if notes is empty/whitespace we'll still write the update
+ * but the rep won't have a reason to act on — log a warning so the omission
+ * is visible during development.
+ */
+export async function rejectDeal({ dealId, notes, actor, currentRevision }) {
+  if (!notes || !notes.trim()) {
+    console.warn('rejectDeal called without notes — UI should enforce this');
+  }
+  const now = new Date().toISOString();
+  return _directorDecision({
+    dealId,
+    currentRevision,
+    patch: {
+      director_decision: 'rejected',
+      director_decision_at: now,
+      director_decision_by: actor || null,
+      director_decision_notes: notes?.trim() || null,
+      // Phase/step stay as pending_director / awaiting_review on purpose —
+      // see the comment above. The deal_status flip is what marks it as
+      // needing attention.
+      deal_status: 'rejected',
+    },
+    revisionPatch: {
+      changeKind: 'director_rejection',
+      diff: { decision: 'rejected', reason: notes?.trim() || null },
+      notes: notes?.trim() || null,
+    },
+    activityAction: 'Director rejected',
+    activityDetail: `${actor || 'Director'} rejected${notes?.trim() ? `: ${notes.trim()}` : ' (no reason given)'}`,
+    actor,
+  });
+}
+
+/**
+ * Rep resubmits a previously-rejected deal. This is the inverse of rejectDeal:
+ *
+ *   - deal_status flips from 'rejected' back to 'active'
+ *   - director_decision clears back to NULL (it's "pending review" again,
+ *     and we use NULL rather than 'pending' here so the queue can tell
+ *     "fresh submission" from "explicitly pending after a customer decision"
+ *     if it ever cares)
+ *   - resubmission_count is incremented so the queue can show "this is the
+ *     Nth try" and the director can spot patterns
+ *   - phase/step stay at pending_director / awaiting_review (the deal
+ *     re-enters the director's queue, no other path makes sense)
+ *
+ * The rep may include `notes` explaining what they changed since the
+ * rejection — this is shown to the director in the queue detail view so
+ * they don't have to diff manually.
+ *
+ * Note: this function doesn't accept a deal-edit payload — it only flips
+ * the workflow columns. If the rep needs to change equipment/pricing on
+ * resubmit, that's a separate edit flow (TODO for a future increment;
+ * v31 ships resubmit-as-is and lets the rep add a note).
+ */
+export async function resubmitDeal({ dealId, notes, actor, currentRevision, currentResubmissionCount }) {
+  return _directorDecision({
+    dealId,
+    currentRevision,
+    patch: {
+      director_decision: null,
+      director_decision_at: null,
+      director_decision_by: null,
+      director_decision_notes: null,
+      deal_status: 'active',
+      phase: 'pending_director',
+      current_step: 'awaiting_review',
+      resubmission_count: (currentResubmissionCount || 0) + 1,
+    },
+    revisionPatch: {
+      changeKind: 'rep_resubmit',
+      diff: {
+        action: 'resubmit',
+        new_resubmission_count: (currentResubmissionCount || 0) + 1,
+      },
+      notes: notes?.trim() || null,
+    },
+    activityAction: 'Rep resubmitted for director review',
+    activityDetail: notes?.trim()
+      ? `Resubmitted (attempt ${(currentResubmissionCount || 0) + 1}): ${notes.trim()}`
+      : `Resubmitted (attempt ${(currentResubmissionCount || 0) + 1})`,
+    actor,
+  });
+}
+
+/**
+ * Internal map version of DIRECTOR_DECISIONS, indexed by `value` for fast
+ * lookup. We can't import from pipelineSteps.js without creating a circular
+ * dependency (pipelineSteps doesn't import from dealPipeline, but importing
+ * here means dealPipeline also depends on pipelineSteps — that's fine,
+ * we already have unidirectional flow there).
+ *
+ * The reason we keep this local rather than importing DIRECTOR_DECISIONS:
+ * dealPipeline.js historically has been free of pipelineSteps imports, and
+ * the approve/reject helpers only need two specific entries. Inlining is
+ * simpler than introducing the dependency just for this. If we end up
+ * needing more pipelineSteps constants here, switch to the import.
+ */
+const DIRECTOR_DECISIONS_FOR_RUNTIME = {
+  approved: { nextPhase: 'ops',              nextStep: 'customer_setup' },
+  rejected: { nextPhase: 'pending_director', nextStep: 'awaiting_review' },
+};
