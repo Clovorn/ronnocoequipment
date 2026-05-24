@@ -2,21 +2,14 @@ import RonnocoLogo from './RonnocoLogo.jsx';
 import UserMenu from './UserMenu.jsx';
 import NotificationBell from './NotificationBell.jsx';
 
-// Regular nav tabs — the main browsable areas. Admin lives in the user menu now;
-// New Deal is a separate primary CTA, rendered as an outlined button beside the
-// tabs (because it's an action, not a place).
-//
-// v31: My Team is gated to managers (directors + admins). The `managerOnly`
-// flag is filtered at render time so non-managers never see the tab. The
-// mobile bottom-bar grid sizes itself from the visible TABS count so the
-// addition doesn't break the layout for reps.
+// Regular nav tabs — the main browsable areas. Admin, My Team, and FAQ live
+// in the user menu now; New Deal is a separate primary CTA, rendered as an
+// outlined button beside the tabs (because it's an action, not a place).
 const TABS = [
   { key: 'home',       label: 'Home',       routeName: 'home',       icon: HomeIcon },
   { key: 'catalog',    label: 'Catalog',    routeName: 'catalog',    icon: CatalogIcon },
   { key: 'bundles',    label: 'Bundles',    routeName: 'bundles',    icon: BundlesIcon },
   { key: 'favorites',  label: 'Favorites',  routeName: 'favorites',  icon: StarIcon },
-  { key: 'my-team',    label: 'My Team',    routeName: 'my-team',    icon: TeamIcon, managerOnly: true },
-  { key: 'faq',        label: 'FAQ',        routeName: 'faq',        icon: FaqIcon },
 ];
 
 /**
@@ -32,10 +25,7 @@ export default function Shell({ profile, session, routeName, navigate, children 
   const isAdmin = role === 'admin' || role === 'director';
   const isManagerOrAdmin = isAdmin;  // alias for tab filtering clarity
 
-  // Filter TABS by role. Manager-only tabs (v31: My Team) are hidden from
-  // reps and customers. The bottom-bar grid count is derived from this so
-  // the layout reflows correctly for each role.
-  const visibleTabs = TABS.filter((t) => !t.managerOnly || isManagerOrAdmin);
+  const visibleTabs = TABS;
 
   // For highlighting, treat vendor & profile sub-pages as part of 'home'
   const activeTab =
@@ -108,12 +98,11 @@ export default function Shell({ profile, session, routeName, navigate, children 
       <main>{children}</main>
 
       {/* Mobile bottom tab bar. Grid column count = visible tab count + 1
-          (the +1 is the New Deal button below the map). v31: managers see
-          an extra "My Team" tab, so the grid switches from 6 to 7 cells
-          for them. Literal class strings keep Tailwind JIT happy. */}
+          (the +1 is the New Deal button below the map). With My Team and FAQ
+          moved into the user menu, mobile stays a clean 5-cell layout. */}
       <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t border-page-200 z-40
                       shadow-[0_-2px_8px_rgba(10,31,61,0.05)]">
-        <div className={visibleTabs.length + 1 >= 7 ? 'grid grid-cols-7' : 'grid grid-cols-6'}>
+        <div className="grid grid-cols-5">
           {visibleTabs.map((t) => {
             const Icon = t.icon;
             const active = activeTab === t.key;
@@ -191,22 +180,4 @@ function StarIcon({ active }) {
 // v31: My Team icon. Reads as "a group" — primary figure centered with two
 // secondary figures behind it. Same 24x24 viewBox and stroke weights as
 // the other nav icons.
-function TeamIcon({ active }) {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} viewBox="0 0 24 24">
-      <circle cx="9" cy="8" r="3" strokeLinecap="round" strokeLinejoin="round" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M3 20a6 6 0 0 1 12 0" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M16 4a3 3 0 1 1 0 6" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M17 13a5 5 0 0 1 4 4.5" />
-    </svg>
-  );
-}
-function FaqIcon({ active }) {
-  return (
-    <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth={active ? 2.2 : 1.8} viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="9" strokeLinecap="round" strokeLinejoin="round" />
-      <path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14" />
-      <circle cx="12" cy="17" r="0.5" fill="currentColor" />
-    </svg>
-  );
-}
+

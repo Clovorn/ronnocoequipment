@@ -4,9 +4,8 @@ import { signOut } from '../lib/useAuth.js';
 /**
  * UserMenu — the dropdown that opens from the user badge in the header.
  *
- * Holds the user's personal actions: profile, admin (if eligible), and sign-out.
- * Anything shared/global (catalog, bundles, announcements) belongs in the main
- * nav, not here.
+ * Holds the user's personal and secondary actions: my deals, my team (if
+ * eligible), FAQ, profile, admin, and sign-out.
  *
  * Behavior:
  *   - Click the badge: toggle open/closed.
@@ -137,6 +136,12 @@ export default function UserMenu({ profile, session, navigate, isAdmin }) {
               />
             )}
             <MenuItem
+              icon={FaqGlyph}
+              label="FAQ"
+              hint="Help, answers, and process guidance"
+              onClick={() => go('faq')}
+            />
+            <MenuItem
               icon={ProfileGlyph}
               label="My profile"
               hint="Edit your name, change your password"
@@ -229,6 +234,15 @@ function TeamGlyph() {
       <path strokeLinecap="round" strokeLinejoin="round" d="M3 20a6 6 0 0 1 12 0" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M16 4a3 3 0 1 1 0 6" />
       <path strokeLinecap="round" strokeLinejoin="round" d="M17 13a5 5 0 0 1 4 4.5" />
+    </svg>
+  );
+}
+function FaqGlyph() {
+  return (
+    <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+      <circle cx="12" cy="12" r="9" strokeLinecap="round" strokeLinejoin="round" />
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6V14" />
+      <circle cx="12" cy="17" r="0.5" fill="currentColor" />
     </svg>
   );
 }
