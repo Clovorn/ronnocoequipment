@@ -4,6 +4,7 @@ import {
   fetchDealById, updateQuote, logDealRevision,
   insertDealBundle, setDealTotalMonthly,
 } from '../lib/dealPipeline.js';
+import { isQuoteable } from '../lib/pipelineSteps.js';
 import { fetchDraft, insertDraft, updateDraft, deleteDraft, defaultDraftName } from '../lib/draftStorage.js';
 import { LEASE_MIN_PRICE, LEASE_RATE } from '../lib/leasing.js';
 import { useLookupList } from '../lib/useLookupList.js';
@@ -420,10 +421,27 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
           return;
         }
         // Sanity check — only quotes should be editable from this path.
-        // A direct-submit deal hitting this code path means a bad URL or a
-        // race; refuse rather than corrupt a non-quote deal.
+        // A direct-submit deal hitting this code path means the rep followed
+        // a stale ?edit=<id> link (e.g. from an old browser tab or bookmark)
+        // for a deal that has since moved past the quote stage. We give a
+        // tailored message per phase so the rep knows where the deal lives
+        // now and can navigate to the right place instead of staring at a
+        // generic refusal.
         if (!data.is_quote) {
-          setHydrationError('This deal isn\'t a quote and can\'t be edited from here.');
+          let msg = "This deal isn't a quote and can't be edited from here.";
+          // v31: director-approval phases have their own narrative.
+          if (data.phase === 'pending_director' && data.director_decision === 'rejected') {
+            msg = 'This deal was rejected by the director. Open it from My Deals to revise and resubmit — editing here would skip that flow.';
+          } else if (data.phase === 'pending_director' && data.director_decision === 'approved') {
+            msg = "This deal was approved by the director and has moved into operations. It can't be edited from the Deal Builder anymore — use the Pipeline dashboard.";
+          } else if (data.phase === 'pending_director') {
+            msg = "This deal is waiting on director approval. Edits are locked while it's in review — please wait for the decision.";
+          } else if (data.phase === 'leasing') {
+            msg = "This deal has moved into leasing. It can't be edited from the Deal Builder — use the Pipeline dashboard.";
+          } else if (data.phase === 'ops') {
+            msg = "This deal has moved into operations. It can't be edited from the Deal Builder — use the Pipeline dashboard.";
+          }
+          setHydrationError(msg);
           setHydrating(false);
           return;
         }
@@ -644,6 +662,15 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
     if (mode === 'quote' && !String(draft.contact_email || '').trim()) {
       businessErrors.push('Customer email is required to send a quote (so we can open your email client with it pre-filled).');
     }
+    // v31: Loan deals require director approval and are sales-team-internal —
+    // they're never quoted to the customer. isQuoteable() returns false for
+    // Loan Equipment. The Quote toggle button is also visually disabled when
+    // deal_type is Loan, but a rep who managed to switch deal_type AFTER
+    // entering quote mode would slip past the button gate; this catches that
+    // case at submit time.
+    if (mode === 'quote' && draft.deal_type && !isQuoteable(draft.deal_type)) {
+      businessErrors.push(`${draft.deal_type} deals can't be quoted to customers — submit as a direct deal instead.`);
+    }
 
     if (missing.length === 0 && businessErrors.length === 0) return null;
 
@@ -713,6 +740,12 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
       director_user_id:      myDirector?.director_user_id || null,
       director_name:         myDirector?.director_name || null,
       director_email:        myDirector?.director_email || null,
+      // v31: rep_director_email is the dedicated column the director-approval
+      // queue (MyTeamPage) filters on. We mirror director_email into it at
+      // submit time so the queue's index can do a single equality lookup
+      // without joining through user_profiles. director_email is still
+      // populated for the existing notification + pipeline-dashboard paths.
+      rep_director_email:    myDirector?.director_email || null,
 
       // Coffee program & delivery
       coffee_program:        trimOrNull(draft.coffee_program),
@@ -1485,11 +1518,23 @@ ${repName}`;
       {!editMode && (
         <div className="mb-4 bg-white border border-page-200 rounded-lg p-2">
           <div className="grid grid-cols-2 gap-2">
+            {/* v31: Quote mode is disabled when deal_type is Loan Equipment.
+                Loans go through director approval and are never customer-facing.
+                The grayed-out look + title attribute explain why on hover. */}
+            {(() => {
+              const quoteDisabled = !!draft.deal_type && !isQuoteable(draft.deal_type);
+              return (
             <button
               type="button"
-              onClick={() => changeSubmitMode('quote')}
+              onClick={() => { if (!quoteDisabled) changeSubmitMode('quote'); }}
+              disabled={quoteDisabled}
+              title={quoteDisabled
+                ? `${draft.deal_type} deals can't be quoted to customers — submit as a direct deal.`
+                : undefined}
               className={`text-left rounded-md px-4 py-3 border transition-colors
-                ${submitMode === 'quote'
+                ${quoteDisabled
+                  ? 'bg-page-50 border-page-200 text-slate-400 cursor-not-allowed opacity-60'
+                  : submitMode === 'quote'
                   ? 'bg-navy-900 border-navy-900 text-chalk-50 shadow-card'
                   : 'bg-white border-page-200 text-slate-700 hover:border-navy-300 hover:bg-page-50'}`}
             >
@@ -1499,10 +1544,18 @@ ${repName}`;
                 </svg>
                 <span className="text-sm font-semibold">Quote</span>
               </div>
-              <p className={`text-xs leading-snug ${submitMode === 'quote' ? 'text-chalk-50/80' : 'text-slate-500'}`}>
-                Send to customer for review
+              <p className={`text-xs leading-snug ${
+                quoteDisabled
+                  ? 'text-slate-400'
+                  : submitMode === 'quote' ? 'text-chalk-50/80' : 'text-slate-500'
+              }`}>
+                {quoteDisabled
+                  ? 'Not available for this deal type'
+                  : 'Send to customer for review'}
               </p>
             </button>
+              );
+            })()}
             <button
               type="button"
               onClick={() => changeSubmitMode('deal')}

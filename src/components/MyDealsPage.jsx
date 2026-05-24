@@ -4,6 +4,7 @@ import {
   fetchMyDeals,
   fetchDealById,
   recordCustomerDecision,
+  resubmitDeal,
   isDealPipelineConfigured,
 } from '../lib/dealPipeline.js';
 import { DECISIONS, getStepStatuses, isTerminalDenial, PHASE_LABELS, STEP_LABELS } from '../lib/pipelineSteps.js';
@@ -53,6 +54,15 @@ export default function MyDealsPage({ profile, session, navigate }) {
   // Which submission row is currently expanded (deal id). Only one open at
   // a time — clicking another row closes the previous one. null = none open.
   const [expandedId, setExpandedId] = useState(null);
+
+  /* ─── v31 resubmit modal state ─── */
+  // When non-null, the resubmit modal is open and pointing at this deal row.
+  // The modal collects optional notes from the rep (e.g. "fixed the address
+  // and tightened the equipment list per the director's note") and flips the
+  // deal back into the director queue via resubmitDeal().
+  const [resubmitTarget, setResubmitTarget] = useState(null);
+  const [resubmitSubmitting, setResubmitSubmitting] = useState(false);
+  const [resubmitError, setResubmitError] = useState(null);
 
   /**
    * Load both sections on mount and whenever the user changes (rare, but
@@ -105,6 +115,56 @@ export default function MyDealsPage({ profile, session, navigate }) {
 
   function handleToggleExpand(dealId) {
     setExpandedId((prev) => (prev === dealId ? null : dealId));
+  }
+
+  /**
+   * v31: open the resubmit modal pointing at a rejected deal row.
+   *
+   * Called from the rejected-deal banner inside DealActions. We snapshot
+   * the row at the moment of opening so the modal renders the customer +
+   * director-note context even if the underlying list re-orders mid-modal
+   * (e.g. from a background refresh).
+   */
+  function openResubmitModal(row) {
+    setResubmitError(null);
+    setResubmitTarget(row);
+  }
+
+  /**
+   * v31: submit the resubmit. Calls resubmitDeal() which:
+   *   - clears director_decision back to null
+   *   - flips deal_status from 'rejected' back to 'active'
+   *   - leaves phase at 'pending_director' (queue stays the same)
+   *   - bumps resubmission_count
+   *   - writes a deal_revisions audit row with the rep's note
+   *   - logs an activity row visible in the Pipeline dashboard
+   *
+   * On success, closes the modal, refreshes the affected row in place so
+   * the pill flips from "Director rejected" to "Pending director · retry N",
+   * and keeps the row expanded so the rep sees the updated state directly.
+   * On failure, surfaces the error inside the modal (doesn't close).
+   */
+  async function submitResubmit(row, notes) {
+    setResubmitError(null);
+    setResubmitSubmitting(true);
+    const actor = profile?.display_name || session?.user?.email || 'rep';
+    const { error } = await resubmitDeal({
+      dealId: row.id,
+      notes: notes || null,
+      actor,
+      currentRevision: row.quote_revision || 1,
+      currentResubmissionCount: row.resubmission_count || 0,
+    });
+    if (error) {
+      setResubmitError(error.message || 'Resubmit failed.');
+      setResubmitSubmitting(false);
+      return;
+    }
+    setResubmitSubmitting(false);
+    setResubmitTarget(null);
+    await refreshSubmission(row.id);
+    // Keep the row expanded so the rep sees the updated state — no nav change.
+    setExpandedId(row.id);
   }
 
   async function handleDelete(draft) {
@@ -207,7 +267,20 @@ export default function MyDealsPage({ profile, session, navigate }) {
         onToggleExpand={handleToggleExpand}
         onEditQuote={handleEditQuote}
         onDecision={handleDecision}
+        onResubmit={openResubmitModal}
       />
+
+      {/* v31 resubmit modal — rendered at the page level (not inside the row)
+          so its fixed-position overlay doesn't get clipped by row scroll. */}
+      {resubmitTarget && (
+        <ResubmitModal
+          row={resubmitTarget}
+          submitting={resubmitSubmitting}
+          error={resubmitError}
+          onCancel={() => { setResubmitTarget(null); setResubmitError(null); }}
+          onSubmit={(notes) => submitResubmit(resubmitTarget, notes)}
+        />
+      )}
     </div>
   );
 }
@@ -348,7 +421,7 @@ function DraftRow({ draft, onResume, onDelete, onRename }) {
 
 /* ───────────────────────── Submissions section ───────────────────────── */
 
-function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilterChange, configured, expandedId, onToggleExpand, onEditQuote, onDecision }) {
+function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilterChange, configured, expandedId, onToggleExpand, onEditQuote, onDecision, onResubmit }) {
   // Counts for the filter pills come from totalCount (unfiltered) so the
   // numbers don't shift as the rep flips between filters.
   return (
@@ -402,6 +475,7 @@ function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilter
                 onToggle={() => onToggleExpand(row.id)}
                 onEditQuote={onEditQuote}
                 onDecision={onDecision}
+                onResubmit={onResubmit}
               />
             ))}
           </ul>
@@ -427,7 +501,7 @@ function EmptySubmissionsState() {
   );
 }
 
-function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision }) {
+function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision, onResubmit }) {
   const isQuote = row.is_quote === true;
   const createdRelative = formatRelativeTime(row.created_at);
   const customerName =
@@ -463,6 +537,15 @@ function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision }) {
               {isQuote && <QuoteDecisionPill decision={row.customer_decision} />}
               {!isQuote && row.phase && <PhasePill phase={row.phase} />}
               {!isQuote && row.current_step && <StepPill step={row.current_step} />}
+              {/* v31: surface the director-approval state on the row. Renders
+                  null for deals that never entered director review, so it
+                  costs nothing on the common path. */}
+              {!isQuote && (
+                <DirectorDecisionPill
+                  decision={row.director_decision}
+                  resubmissionCount={row.resubmission_count || 0}
+                />
+              )}
               {isQuote && row.quote_first_viewed_at && (
                 <span className="inline-flex items-center gap-1 text-[10px] uppercase tracking-wider font-medium text-slate-500"
                       title={`First viewed ${new Date(row.quote_first_viewed_at).toLocaleString()}`}>
@@ -505,6 +588,7 @@ function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision }) {
             isQuote={isQuote}
             onEditQuote={onEditQuote}
             onDecision={onDecision}
+            onResubmit={onResubmit}
           />
         </div>
       )}
@@ -525,7 +609,7 @@ function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision }) {
  *   - For deals: a small note pointing reps to the Pipeline dashboard for
  *     any further edits
  */
-function SubmissionDetail({ row, isQuote, onEditQuote, onDecision }) {
+function SubmissionDetail({ row, isQuote, onEditQuote, onDecision, onResubmit }) {
   const customerName =
     row.contact_name ||
     [row.first_name, row.last_name].filter(Boolean).join(' ') ||
@@ -619,7 +703,7 @@ function SubmissionDetail({ row, isQuote, onEditQuote, onDecision }) {
       {isQuote ? (
         <QuoteActions row={row} onEditQuote={onEditQuote} onDecision={onDecision} />
       ) : (
-        <DealActions row={row} />
+        <DealActions row={row} onResubmit={onResubmit} />
       )}
     </div>
   );
@@ -873,7 +957,157 @@ function DecisionSummary({ row }) {
 
 /* ───────────────────────── Deal actions (read-only) ───────────────────────── */
 
-function DealActions({ row }) {
+/**
+ * v31: DealActions renders one of four panels at the bottom of the
+ * SubmissionDetail for a non-quote (direct-submit) deal, picked by inspecting
+ * `director_decision`:
+ *
+ *   1. **rejected** — the director sent the deal back. Red banner showing
+ *      the director's note (`director_decision_notes`) and a prominent
+ *      "Revise and resubmit" CTA that opens the resubmit modal. This is
+ *      the only branch where the rep has an action to take.
+ *
+ *   2. **pending_director** (decision === 'pending') — amber waiting notice.
+ *      Lets the rep know the deal is sitting in their director's queue and
+ *      that there's nothing for them to do here.
+ *
+ *   3. **approved** — green confirmation showing the director's optional
+ *      note. Usually visible only briefly before the deal advances out of
+ *      pending_director into ops, but we render it gracefully if the row
+ *      hasn't refreshed yet.
+ *
+ *   4. **default** — the original view-only panel pointing the rep at the
+ *      Pipeline dashboard. Used for any deal that never entered the
+ *      director-approval flow (leases / finance) or has already moved on.
+ */
+function DealActions({ row, onResubmit }) {
+  const dec = row.director_decision;
+
+  // Branch 1: rejected — surface the rejection reason + resubmit CTA
+  if (dec === 'rejected') {
+    const reason = row.director_decision_notes;
+    const decidedBy = row.director_decision_by;
+    const decidedAt = row.director_decision_at;
+    const tries = row.resubmission_count || 0;
+    return (
+      <div className="bg-red-50 border border-bad/40 rounded p-3 md:p-4">
+        <div className="flex items-start gap-2">
+          <svg className="w-5 h-5 text-bad flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-bad mb-1">
+              Director rejected this deal
+              {tries > 0 && (
+                <span className="ml-2 text-[10px] uppercase tracking-wider font-medium text-bad/80 bg-bad/10 rounded-full px-2 py-0.5">
+                  {tries === 1 ? '1 prior retry' : `${tries} prior retries`}
+                </span>
+              )}
+            </div>
+            {reason ? (
+              <div className="text-xs text-slate-700 bg-white border border-bad/20 rounded p-2 mb-2 whitespace-pre-wrap">
+                <span className="text-[10px] uppercase tracking-wider font-bold text-bad/70 block mb-0.5">
+                  Director's note
+                </span>
+                {reason}
+              </div>
+            ) : (
+              <div className="text-xs text-slate-600 italic mb-2">
+                No reason was provided. Reach out to {decidedBy || 'your director'} for context.
+              </div>
+            )}
+            <div className="text-[11px] text-slate-500 mb-3">
+              {decidedBy && <>Decided by {decidedBy}</>}
+              {decidedBy && decidedAt && <> · </>}
+              {decidedAt && <>{formatRelativeTime(decidedAt)}</>}
+            </div>
+            <button
+              type="button"
+              onClick={() => onResubmit && onResubmit(row)}
+              disabled={!onResubmit}
+              className="inline-flex items-center gap-1.5 bg-navy-900 text-chalk-50 text-xs font-semibold uppercase tracking-wider px-3 py-2 rounded hover:bg-navy-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182m0-4.991v4.99" />
+              </svg>
+              Revise and resubmit
+            </button>
+            {row.id && (
+              <div className="mt-2 text-[10px] text-slate-500 font-mono">Deal ID: {row.id}</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Branch 2: pending — waiting on director, no action for the rep
+  if (dec === 'pending') {
+    return (
+      <div className="bg-accent-500/10 border border-accent-500/40 rounded p-3 md:p-4">
+        <div className="flex items-start gap-2">
+          <svg className="w-5 h-5 text-accent-700 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-accent-700 mb-0.5">
+              Waiting on director approval
+            </div>
+            <div className="text-xs text-slate-700">
+              This deal is in your director's queue. They'll either approve and advance it to
+              operations, or send it back with notes so you can revise. There's nothing for you
+              to do here — you'll see the result on this page when they decide.
+            </div>
+            {(row.resubmission_count || 0) > 0 && (
+              <div className="text-[11px] text-accent-700/70 mt-2">
+                This is retry {row.resubmission_count}. Hang tight.
+              </div>
+            )}
+            {row.id && (
+              <div className="mt-2 text-[10px] text-slate-500 font-mono">Deal ID: {row.id}</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Branch 3: approved — green confirmation, optional director's note
+  if (dec === 'approved') {
+    const note = row.director_decision_notes;
+    const decidedBy = row.director_decision_by;
+    return (
+      <div className="bg-ok/10 border border-ok/40 rounded p-3 md:p-4">
+        <div className="flex items-start gap-2">
+          <svg className="w-5 h-5 text-ok flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-semibold text-ok mb-0.5">
+              Director approved this deal
+            </div>
+            <div className="text-xs text-slate-700">
+              {decidedBy ? `${decidedBy} approved this deal — it's been advanced to operations.` :
+                "Approved — this deal has been advanced to operations."}
+            </div>
+            {note && (
+              <div className="text-xs text-slate-700 bg-white border border-ok/20 rounded p-2 mt-2 whitespace-pre-wrap">
+                <span className="text-[10px] uppercase tracking-wider font-bold text-ok/70 block mb-0.5">
+                  Director's note
+                </span>
+                {note}
+              </div>
+            )}
+            {row.id && (
+              <div className="mt-2 text-[10px] text-slate-500 font-mono">Deal ID: {row.id}</div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Branch 4: default — the original view-only panel for non-approval-flow deals
   return (
     <div className="bg-page-50 border border-page-200 rounded p-3 text-xs text-slate-600">
       <div className="flex items-start gap-2">
@@ -959,16 +1193,22 @@ function TypePill({ isQuote }) {
 }
 
 function PhasePill({ phase }) {
-  // Pipeline phases: sales → leasing → ops. Sales shouldn't appear here for
-  // direct-submit deals but we cover it for safety.
+  // Pipeline phases: sales → leasing → ops, plus v31's pending_director.
+  // Sales shouldn't appear here for direct-submit deals but we cover it for safety.
   const label = {
-    sales:   'Sales',
-    leasing: 'Leasing',
-    ops:     'Operations',
+    sales:            'Sales',
+    pending_director: 'Director Review',
+    leasing:          'Leasing',
+    ops:              'Operations',
   }[phase] || phase;
+  // v31: pending_director gets accent styling so it visually separates from
+  // the neutral slate pills used for the standard phases. This makes the
+  // "needs attention" deals pop on a long list.
+  const cls = phase === 'pending_director'
+    ? 'bg-accent-500/15 text-accent-700'
+    : 'bg-slate-100 text-slate-700';
   return (
-    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-medium
-                     bg-slate-100 text-slate-700">
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-medium ${cls}`}>
       {label}
     </span>
   );
@@ -1005,6 +1245,77 @@ function QuoteDecisionPill({ decision }) {
       {label}
     </span>
   );
+}
+
+/**
+ * v31: DirectorDecisionPill — the director-approval status for a deal that
+ * has been routed through the pending_director phase (Purchase or Loan).
+ *
+ * Renders only when there's something meaningful to show. Returns null for
+ * deals that never entered the director-approval flow (e.g. leases, finance,
+ * customer-declined quotes). The three states it surfaces are:
+ *
+ *   - 'pending'  — waiting on the director. Amber/neutral tone; gentle "in
+ *                  progress" affordance so the rep knows it's normal.
+ *   - 'rejected' — the director sent it back. Red tone to draw the eye; the
+ *                  resubmission badge (rev N) appears alongside if the rep
+ *                  has tried more than once.
+ *   - 'approved' — green check; cleared for ops. Usually visible briefly
+ *                  before the deal phase advances to ops, but we still show
+ *                  it if the row hasn't refreshed yet.
+ *
+ * Resubmission count is surfaced as "(retry N)" appended to the pill text so
+ * it stays compact in the row header. We start showing it at count >= 1
+ * because count 0 just means "first submission" — not useful information.
+ */
+function DirectorDecisionPill({ decision, resubmissionCount }) {
+  if (!decision) return null;
+
+  if (decision === 'pending') {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-medium
+                       bg-accent-500/15 text-accent-700"
+            title="Waiting on the director's approval">
+        <span className="w-1.5 h-1.5 rounded-full bg-accent-500 mr-1.5 animate-pulse" />
+        Pending director
+        {resubmissionCount > 0 && (
+          <span className="ml-1 text-accent-700/70 font-normal normal-case">
+            · retry {resubmissionCount}
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  if (decision === 'rejected') {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-medium
+                       bg-red-50 text-bad"
+            title="The director rejected this deal. Open the row to see why and resubmit.">
+        Director rejected
+        {resubmissionCount > 0 && (
+          <span className="ml-1 text-bad/70 font-normal normal-case">
+            · {resubmissionCount === 1 ? '1 retry' : `${resubmissionCount} retries`}
+          </span>
+        )}
+      </span>
+    );
+  }
+
+  if (decision === 'approved') {
+    return (
+      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-medium
+                       bg-ok/10 text-ok"
+            title="The director approved this deal.">
+        <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+        </svg>
+        Director approved
+      </span>
+    );
+  }
+
+  return null;
 }
 
 function FilterPill({ active, onClick, children }) {
@@ -1052,4 +1363,149 @@ function formatRelativeTime(isoString) {
 function buildQuoteUrl(quoteNumber, token) {
   const base = typeof window !== 'undefined' ? window.location.origin : '';
   return `${base}/#/quote/${quoteNumber}?t=${token}`;
+}
+
+/* ───────────────────────── v31 Resubmit modal ───────────────────────── */
+
+/**
+ * ResubmitModal — opened from the rejected-deal banner in DealActions.
+ *
+ * Workflow:
+ *   1. Rep opens a rejected deal in My Deals
+ *   2. Sees the red banner with the director's rejection reason
+ *   3. Clicks "Revise and resubmit"
+ *   4. THIS MODAL appears, collecting an optional note ("here's what I
+ *      changed") that becomes part of the audit trail
+ *   5. On Resubmit, the parent calls resubmitDeal() which flips the deal
+ *      back into the director's queue
+ *
+ * The modal is intentionally light on form fields — the rep has presumably
+ * already revised the deal elsewhere (or is about to once it lands back in
+ * draft mode). This is purely the "send it back for another look" action.
+ * If we later want the rep to revise the equipment list/customer info from
+ * this exact flow, we'd add a "Open in Deal Builder" branch that hydrates
+ * the deal back into a draft — but that's a separate workflow.
+ *
+ * Accessibility: Escape closes, click-outside closes, the textarea is
+ * focused on open so a rep typing the note doesn't need to tab/click first.
+ */
+function ResubmitModal({ row, submitting, error, onCancel, onSubmit }) {
+  const [notes, setNotes] = useState('');
+
+  // Escape key closes the modal (unless we're mid-submit, to avoid losing
+  // a request in flight). Mounted once per modal lifetime.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key === 'Escape' && !submitting) onCancel();
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel, submitting]);
+
+  function handleSubmit() {
+    if (submitting) return;
+    onSubmit(notes.trim() || null);
+  }
+
+  const customerName =
+    row.contact_name ||
+    [row.first_name, row.last_name].filter(Boolean).join(' ') ||
+    '(no name)';
+  const rejectionReason = row.director_decision_notes;
+  const priorRetries = row.resubmission_count || 0;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm px-4"
+      onClick={(e) => { if (e.target === e.currentTarget && !submitting) onCancel(); }}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="resubmit-modal-title"
+    >
+      <div className="bg-white rounded-lg shadow-xl max-w-md w-full max-h-[90vh] overflow-hidden flex flex-col">
+        {/* Header */}
+        <div className="bg-navy-900 text-chalk-50 px-5 py-3 flex items-center justify-between gap-3 flex-shrink-0">
+          <div>
+            <h2 id="resubmit-modal-title" className="text-base font-semibold">
+              Revise and resubmit
+            </h2>
+            <div className="text-[11px] uppercase tracking-wider text-chalk-50/70 mt-0.5">
+              {row.store_name || customerName}
+              {priorRetries > 0 && <> · attempt {priorRetries + 1}</>}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={submitting}
+            className="text-chalk-50/70 hover:text-chalk-50 disabled:opacity-50"
+            aria-label="Close"
+          >
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4 space-y-3 overflow-y-auto flex-1">
+          {/* Surface the director's reason at the top of the modal so the
+              rep can refer to it while writing their resubmit note. */}
+          {rejectionReason && (
+            <div className="bg-red-50 border border-bad/30 rounded p-3 text-xs text-slate-700">
+              <div className="text-[10px] uppercase tracking-wider font-bold text-bad/80 mb-1">
+                Why it was rejected
+              </div>
+              <div className="whitespace-pre-wrap">{rejectionReason}</div>
+            </div>
+          )}
+
+          <div>
+            <label htmlFor="resubmit-notes" className="block text-xs uppercase tracking-wider font-bold text-slate-700 mb-1">
+              What changed? <span className="text-slate-400 font-normal normal-case">(optional)</span>
+            </label>
+            <textarea
+              id="resubmit-notes"
+              autoFocus
+              rows={4}
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              disabled={submitting}
+              placeholder="e.g. Updated the customer's address and removed the second espresso machine per the note above."
+              className="w-full text-sm border border-page-300 rounded px-2.5 py-2 focus:outline-none focus:ring-2 focus:ring-navy-300 focus:border-navy-400 disabled:bg-page-50 disabled:text-slate-500"
+            />
+            <p className="text-[11px] text-slate-500 mt-1">
+              Your note will be visible to the director when they review the resubmission.
+            </p>
+          </div>
+
+          {error && (
+            <div className="bg-red-50 border border-bad/40 rounded p-2.5 text-xs text-bad">
+              {error}
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="bg-page-50 border-t border-page-200 px-5 py-3 flex items-center justify-end gap-2 flex-shrink-0">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={submitting}
+            className="text-xs font-semibold uppercase tracking-wider px-3 py-2 rounded border border-page-300 text-slate-700 hover:bg-white disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting}
+            className="text-xs font-semibold uppercase tracking-wider px-3 py-2 rounded bg-navy-900 text-chalk-50 hover:bg-navy-800 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {submitting ? 'Resubmitting…' : 'Resubmit for review'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
