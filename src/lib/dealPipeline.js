@@ -1,703 +1,1064 @@
-/**
- * Deal-pipeline cross-project Supabase client.
- *
- * The catalog app writes finalized deals to a different Supabase project
- * (deal-pipeline) so they appear in the existing pipeline dashboard alongside
- * deals submitted through the legacy Jotform.
- *
- * Configure via env vars:
- *   VITE_DEAL_PIPELINE_URL       - https://<ref>.supabase.co
- *   VITE_DEAL_PIPELINE_ANON_KEY  - the anon JWT for that project
- *
- * If unset, deal submission is disabled and the UI will surface a clear
- * configuration message instead of failing silently.
- */
-import { createClient } from '@supabase/supabase-js';
-
-const URL = import.meta.env.VITE_DEAL_PIPELINE_URL;
-const KEY = import.meta.env.VITE_DEAL_PIPELINE_ANON_KEY;
-
-export const isDealPipelineConfigured = Boolean(URL && KEY);
-
-// Build a separate Supabase client only when configured. This client uses
-// the deal-pipeline project's anon key — it has no session of its own, since
-// the deal pipeline is treated as a write-only endpoint from the catalog
-// app's perspective. RLS on the pipeline project's `deals` table controls
-// what's permitted.
-export const dealPipeline = isDealPipelineConfigured
-  ? createClient(URL, KEY, {
-      auth: {
-        // Don't try to persist a session — this is a write-only client.
-        persistSession: false,
-        autoRefreshToken: false,
-      },
-    })
-  : null;
+import { useEffect, useMemo, useState } from 'react';
+import {
+  fetchTeamDeals,
+  approveDeal,
+  rejectDeal,
+  isDealPipelineConfigured,
+} from '../lib/dealPipeline.js';
+import {
+  DIRECTOR_DECISIONS,
+  PHASE_LABELS,
+  STEP_LABELS,
+} from '../lib/pipelineSteps.js';
 
 /**
- * Submit a deal to the pipeline project.
+ * MyTeamPage — the director's (or admin's) approval workspace.
  *
- * payload should match the columns of public.deals in the pipeline project.
- * Returns { data, error } in Supabase style.
- */
-export async function submitDealToPipeline(payload) {
-  if (!dealPipeline) {
-    return { data: null, error: { message: 'Deal pipeline not configured. Set VITE_DEAL_PIPELINE_URL and VITE_DEAL_PIPELINE_ANON_KEY.' } };
-  }
-  const { data, error } = await dealPipeline
-    .from('deals')
-    .insert(payload)
-    .select()
-    .single();
-  return { data, error };
-}
-
-/**
- * Generate a new quote number via the DB function. Returns `Q-YYYY-NNNN`.
- * The DB-side function is atomic (insert..on conflict do update returning),
- * so concurrent calls don't collide.
- */
-export async function generateQuoteNumber() {
-  if (!dealPipeline) return { data: null, error: { message: 'Deal pipeline not configured.' } };
-  const { data, error } = await dealPipeline.rpc('generate_quote_number');
-  return { data, error };
-}
-
-/**
- * Fetch a quote for the public customer-facing page. Only returns a record
- * if both the quote_number AND the token match — this is the access control.
- * No auth required; anyone with the URL+token can view.
+ * Two stacked sections, both sourced from a single fetchTeamDeals call:
  *
- * Returns a *limited* projection — only fields safe to show the customer.
- * Internal info (cost, ROM, distributor details, internal notes) is omitted.
+ *   1. **Pending approvals** — the action queue. Deals where
+ *      `phase === 'pending_director'` and `director_decision` is NULL or
+ *      'pending'. These are deals that the customer accepted as Purchase or
+ *      Loan and are now waiting on the director's go/no-go before they
+ *      move to operations. Shown prominently at the top with Approve / Reject
+ *      buttons on each row.
+ *
+ *   2. **Team activity** — the broader rep-grouped history. Every other
+ *      deal the director has authority over, grouped by sales rep, collapsed
+ *      by default. Each rep group expands to a small table of their deals
+ *      with status badges, customer decision, director decision, and
+ *      resubmission count if any. This is read-only — directors view team
+ *      history here but act only on the queue above.
+ *
+ * Scope:
+ *   - For directors (role === 'director'): always 'mine' scope. Shows only
+ *     deals whose `rep_director_email` equals their session email.
+ *   - For admins (role === 'admin'): defaults to 'all' scope (cross-team
+ *     view) but offers a toggle to switch to 'mine' if the admin is also
+ *     assigned as someone's director and wants their personal queue.
+ *
+ * Refresh model:
+ *   - Initial fetch on mount.
+ *   - After each approve/reject decision, refetch the full team list (one
+ *     round-trip, simpler than splicing the updated row in). The decision
+ *     modal closes itself; the page state stays put (no remount).
  */
-export async function fetchQuoteForCustomer(quoteNumber, token) {
-  if (!dealPipeline) return { data: null, error: { message: 'Deal pipeline not configured.' } };
-  if (!quoteNumber || !token) return { data: null, error: { message: 'Missing quote number or token.' } };
+export default function MyTeamPage({ profile, session, navigate }) {
+  const role = profile?.role || 'sales';
+  const isAdmin = role === 'admin';
+  const myEmail = session?.user?.email || null;
 
-  const { data, error } = await dealPipeline
-    .from('deals')
-    .select(`
-      id, quote_number, quote_revision, quote_cover_note, quote_valid_until,
-      quote_first_sent_at, quote_last_sent_at,
-      first_name, last_name, contact_name, contact_email,
-      store_name, address, city, state, zip_code,
-      sales_rep, sales_rep_email,
-      deal_type, equipment_selection, total_eq_cost,
-      target_install_date,
-      raw_csv,
-      deal_status, customer_decision,
-      created_at, updated_at
-    `)
-    .eq('quote_number', quoteNumber)
-    .eq('quote_token', token)
-    .eq('is_quote', true)
-    .maybeSingle();
+  /* ─── Scope toggle ─── */
+  // Admins default to 'all' (cross-director view); directors are locked to 'mine'.
+  // Stored separately from the role check so an admin who is also a director
+  // can flip back to their personal queue.
+  const [scope, setScope] = useState(isAdmin ? 'all' : 'mine');
 
-  return { data, error };
-}
+  /* ─── Data state ─── */
+  const [deals, setDeals] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
 
-/**
- * Best-effort "the customer opened the quote" tracker. Called from the public
- * quote page when it loads. Updates quote_first_viewed_at if null, and always
- * bumps quote_last_viewed_at. Failures are swallowed — viewing should never
- * be blocked by tracking.
- */
-export async function recordQuoteView(quoteNumber, token) {
-  if (!dealPipeline || !quoteNumber || !token) return;
-  try {
-    const now = new Date().toISOString();
-    // Update last_viewed_at always; set first_viewed_at only if null.
-    await dealPipeline
-      .from('deals')
-      .update({
-        quote_last_viewed_at: now,
-        quote_first_viewed_at: now,  // ignored if first_viewed_at is already set; see below
+  /* ─── Decision modal state ─── */
+  // When non-null, the modal is open and acting on this deal. The kind
+  // ('approve' | 'reject') drives the modal's labels, color, and required-
+  // notes behavior.
+  const [pendingAction, setPendingAction] = useState(null);  // { deal, kind } | null
+
+  /* ─── Rep group expansion state ─── */
+  // Keys are rep emails. A rep group is expanded when its email is in this set.
+  // Pending-queue items aren't grouped — only the activity section uses this.
+  const [expandedReps, setExpandedReps] = useState(() => new Set());
+
+  /* ─── Pending-queue expansion state (v31 follow-up) ─── */
+  // Keys are deal IDs. When a queue row is expanded, the director sees the
+  // full detail breakdown (equipment, contact, distributor, notes, economics)
+  // inline beneath the row without leaving the page. Multiple rows can be
+  // expanded at once — useful when comparing two pending deals side-by-side.
+  const [expandedPending, setExpandedPending] = useState(() => new Set());
+
+  /**
+   * Load the team's deals. Called on mount, when scope changes, and after
+   * any director action (approve / reject) so the queue reflects the new
+   * state without remounting the page.
+   */
+  function loadDeals() {
+    if (!isDealPipelineConfigured) {
+      setError('Deal pipeline is not configured. Set VITE_DEAL_PIPELINE_URL and VITE_DEAL_PIPELINE_ANON_KEY in Netlify env vars.');
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    fetchTeamDeals(myEmail, { scope })
+      .then(({ data, error: fetchError }) => {
+        if (fetchError) {
+          setError(fetchError.message);
+          setDeals([]);
+        } else {
+          setDeals(data);
+        }
+        setLoading(false);
       })
-      .eq('quote_number', quoteNumber)
-      .eq('quote_token', token)
-      .is('quote_first_viewed_at', null);
-
-    // Always bump last_viewed_at regardless of first_viewed status
-    await dealPipeline
-      .from('deals')
-      .update({ quote_last_viewed_at: now })
-      .eq('quote_number', quoteNumber)
-      .eq('quote_token', token);
-  } catch (err) {
-    console.warn('Quote view tracking failed (non-fatal):', err);
-  }
-}
-
-/**
- * Fetch every deal in the pipeline submitted by this rep (by email match).
- *
- * Why email and not user_id: the pipeline DB doesn't know about catalog auth
- * users — submissions are written via the anon key with `sales_rep_email`
- * stamped from the rep's session at submit time. So email is the only link
- * back to the current user.
- *
- * Returns BOTH quotes (is_quote=true, phase='sales') AND direct-submit deals
- * (is_quote=false, phase='leasing' or beyond). The workspace UI is responsible
- * for filtering / grouping them visually.
- *
- * Projection is the columns the workspace actually displays — keeping this
- * narrow avoids dragging the full deal record (which has tons of internal-only
- * fields) over the wire on every workspace load.
- */
-export async function fetchMyDeals(email) {
-  if (!dealPipeline) {
-    return { data: [], error: { message: 'Deal pipeline not configured.' } };
-  }
-  if (!email) {
-    // No email = no scope. Empty result is safer than dumping all deals.
-    return { data: [], error: null };
-  }
-
-  const { data, error } = await dealPipeline
-    .from('deals')
-    .select(`
-      id,
-      is_quote, quote_number, quote_token, quote_valid_until,
-      quote_first_sent_at, quote_last_sent_at,
-      quote_first_viewed_at, quote_last_viewed_at,
-      customer_decision, customer_decision_at,
-      current_step, phase, deal_status,
-      first_name, last_name, contact_name, contact_email,
-      store_name, city, state,
-      deal_type, total_eq_cost,
-      sales_rep, sales_rep_email,
-      created_at, updated_at
-    `)
-    .eq('sales_rep_email', email)
-    .order('created_at', { ascending: false });
-
-  return { data: data || [], error };
-}
-
-/**
- * Log an activity row for a freshly-inserted deal. Best-effort — if it fails,
- * we don't block the deal submission (the deal exists in the pipeline either way).
- */
-export async function logDealActivity(dealId, action, detail, actor) {
-  if (!dealPipeline) return;
-  try {
-    await dealPipeline
-      .from('deal_activity')
-      .insert({
-        deal_id: dealId,
-        action,
-        detail,
-        actor,
+      .catch((err) => {
+        setError(err.message || 'Unknown error');
+        setLoading(false);
       });
-  } catch (err) {
-    // Best-effort logging — don't fail the deal because activity log failed
-    console.warn('Could not log deal activity:', err);
-  }
-}
-
-/**
- * Fetch the full deal record for the My Deals detail view and the quote
- * editor. Selects every column we might display, including the raw_csv
- * snapshot which holds the structured equipment array.
- *
- * RLS on the pipeline DB is currently permissive (anon can read everything);
- * this function doesn't add a sales_rep_email filter because the row was
- * already retrieved with that filter in fetchMyDeals — the rep is just
- * drilling into a row they already saw. If the pipeline DB ever gets
- * proper RLS, we'd add the filter here too.
- */
-export async function fetchDealById(dealId) {
-  if (!dealPipeline) {
-    return { data: null, error: { message: 'Deal pipeline not configured.' } };
-  }
-  if (!dealId) {
-    return { data: null, error: { message: 'Missing deal id.' } };
-  }
-  const { data, error } = await dealPipeline
-    .from('deals')
-    .select('*')
-    .eq('id', dealId)
-    .maybeSingle();
-  return { data, error };
-}
-
-/**
- * Update an existing quote in the pipeline and bump its revision counter.
- *
- * This is called by the "Re-send quote" flow in DealBuilder when editing a
- * previously-sent quote. The pipeline `deals` row stays in place — we
- * UPDATE it rather than INSERT a new row — so the customer's saved URL
- * (which embeds quote_number + quote_token) keeps working and now shows
- * the new contents.
- *
- * Returns { data: <updated row>, error }. The caller is responsible for
- * inserting the deal_revisions audit row separately (via logDealRevision)
- * and re-opening mailto: — we keep those side-effects out of this helper
- * so it stays a pure UPDATE.
- */
-export async function updateQuote(dealId, patch) {
-  if (!dealPipeline) {
-    return { data: null, error: { message: 'Deal pipeline not configured.' } };
-  }
-  const now = new Date().toISOString();
-  const { data, error } = await dealPipeline
-    .from('deals')
-    .update({
-      ...patch,
-      quote_last_sent_at: now,
-      updated_at: now,
-    })
-    .eq('id', dealId)
-    .select()
-    .single();
-  return { data, error };
-}
-
-/**
- * Record an entry in deal_revisions. Used after a quote edit/re-send and
- * after a customer-decision update so there's a complete audit trail of
- * every meaningful change to a deal.
- *
- * `diff` is freeform jsonb — callers can put whatever shape makes sense
- * for the change kind:
- *   - quote_edit: { equipment_changed: bool, cover_note_changed: bool, ... }
- *   - decision:   { from: 'pending', to: 'lease', phase_advanced: 'leasing' }
- *
- * Best-effort: failures are logged but not raised, since the underlying
- * change has already been persisted by the time we call this.
- */
-export async function logDealRevision({ dealId, revision, changedBy, changeKind, diff, notes }) {
-  if (!dealPipeline) return { error: { message: 'Not configured.' } };
-  try {
-    const { error } = await dealPipeline
-      .from('deal_revisions')
-      .insert({
-        deal_id: dealId,
-        revision,
-        changed_by: changedBy,
-        change_kind: changeKind,
-        diff: diff || {},
-        notes: notes || null,
-      });
-    if (error) console.warn('Could not log deal revision:', error);
-    return { error };
-  } catch (err) {
-    console.warn('logDealRevision threw:', err);
-    return { error: { message: err.message } };
-  }
-}
-
-/**
- * Record the customer's decision on a quote and advance the deal's phase
- * accordingly. Wraps three pipeline writes into one helper so the caller
- * (MyDealsPage) doesn't have to coordinate them:
- *
- *   1. UPDATE deals SET customer_decision, customer_decision_at,
- *      customer_decision_notes, phase, current_step, is_quote=false,
- *      deal_status (closed if declined)
- *   2. INSERT deal_revisions row (change_kind='decision', diff has from/to)
- *   3. INSERT deal_activity row (human-readable for the dashboard's activity feed)
- *
- * The `decision` arg is one of the DECISIONS entries from pipelineSteps.js —
- * its nextPhase/nextStep/closed fields drive the column updates.
- *
- * Note that `is_quote` flips to false here: once the customer has decided,
- * this row is no longer a "quote pending response" — it's a deal moving
- * through the pipeline. The customer-facing quote URL still works (it
- * matches on quote_number + quote_token without checking is_quote), so
- * the customer can still see what they decided on.
- */
-export async function recordCustomerDecision({ dealId, decision, notes, actor, currentRevision }) {
-  if (!dealPipeline) {
-    return { data: null, error: { message: 'Deal pipeline not configured.' } };
-  }
-  const now = new Date().toISOString();
-
-  // Build the column patch from the decision spec.
-  const patch = {
-    customer_decision: decision.value,
-    customer_decision_at: now,
-    customer_decision_notes: notes || null,
-    is_quote: false,        // no longer a pending quote
-    updated_at: now,
-  };
-  if (decision.nextPhase) {
-    patch.phase = decision.nextPhase;
-    patch.current_step = decision.nextStep;
-  }
-  if (decision.closed) {
-    patch.deal_status = 'closed';
   }
 
-  // 1) Update the deal
-  const { data: updated, error: updErr } = await dealPipeline
-    .from('deals')
-    .update(patch)
-    .eq('id', dealId)
-    .select()
-    .single();
-  if (updErr) return { data: null, error: updErr };
+  // Initial + scope-change fetch
+  useEffect(() => {
+    loadDeals();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scope, myEmail]);
 
-  // 2) Audit log — separate from activity feed; this is the structured trail
-  await logDealRevision({
-    dealId,
-    revision: (currentRevision || 0) + 1,
-    changedBy: actor,
-    changeKind: 'decision',
-    diff: {
-      decision: decision.value,
-      next_phase: decision.nextPhase,
-      next_step: decision.nextStep,
-      closed: !!decision.closed,
-    },
-    notes,
-  });
+  /* ─── Pending queue & rep grouping (derived) ─── */
 
-  // 3) Human-readable activity feed entry — what the dashboard shows
-  await logDealActivity(
-    dealId,
-    `Customer decision: ${decision.label}`,
-    decision.nextPhase
-      ? `Deal advanced to ${decision.nextPhase} phase (${decision.nextStep})`
-      : 'Deal marked closed',
-    actor,
+  // Pending = needs action from a director. The DB allows director_decision
+  // to be NULL (never decided) or 'pending' (explicitly queued by a customer
+  // decision handler that wants to be explicit). Both count.
+  const pendingDeals = useMemo(
+    () => deals.filter(
+      (d) => d.phase === 'pending_director'
+          && (d.director_decision == null || d.director_decision === 'pending')
+    ),
+    [deals]
   );
 
-  return { data: updated, error: null };
+  // Activity = everything else the director has authority over. Could be
+  // already-approved (in ops), already-rejected (waiting on the rep to fix),
+  // or in some other phase entirely (e.g., a leasing deal that the director
+  // is the rep's assigned director on — they can see it for context).
+  const activityDeals = useMemo(
+    () => deals.filter(
+      (d) => !(d.phase === 'pending_director'
+            && (d.director_decision == null || d.director_decision === 'pending'))
+    ),
+    [deals]
+  );
+
+  // Group activity deals by sales rep email so the section can render
+  // one collapsible group per rep. Sort by group size desc so most-active
+  // reps surface at the top.
+  const repGroups = useMemo(() => {
+    const map = new Map();
+    for (const d of activityDeals) {
+      const key = d.sales_rep_email || '(no rep)';
+      if (!map.has(key)) {
+        map.set(key, {
+          email: key,
+          name: d.sales_rep || key,
+          deals: [],
+        });
+      }
+      map.get(key).deals.push(d);
+    }
+    return Array.from(map.values()).sort((a, b) => b.deals.length - a.deals.length);
+  }, [activityDeals]);
+
+  /* ─── Action handlers ─── */
+
+  function openApprove(deal) {
+    setPendingAction({ deal, kind: 'approve' });
+  }
+  function openReject(deal) {
+    setPendingAction({ deal, kind: 'reject' });
+  }
+  function closeModal() {
+    setPendingAction(null);
+  }
+
+  /**
+   * Actually invoke the director decision. The DecisionModal collects notes
+   * + confirmation; this commits the call to the pipeline and refreshes.
+   *
+   * Returns void — the modal will display its own success/error state if
+   * needed, but in practice success closes the modal and refreshes; errors
+   * surface via the modal's submit handler.
+   */
+  async function submitDecision(kind, notes) {
+    if (!pendingAction) return { error: { message: 'Nothing to submit' } };
+    const deal = pendingAction.deal;
+    const actor = profile?.display_name || myEmail || 'Director';
+    const fn = kind === 'approve' ? approveDeal : rejectDeal;
+    const { error: actionError } = await fn({
+      dealId: deal.id,
+      notes: notes || null,
+      actor,
+      currentRevision: deal.quote_revision || 0,
+    });
+    if (actionError) {
+      return { error: actionError };
+    }
+    closeModal();
+    loadDeals();
+    return { ok: true };
+  }
+
+  function toggleRepExpansion(email) {
+    setExpandedReps((prev) => {
+      const next = new Set(prev);
+      if (next.has(email)) next.delete(email); else next.add(email);
+      return next;
+    });
+  }
+
+  function toggleDealExpansion(dealId) {
+    setExpandedPending((prev) => {
+      const next = new Set(prev);
+      if (next.has(dealId)) next.delete(dealId); else next.add(dealId);
+      return next;
+    });
+  }
+
+  /* ─── Render ─── */
+
+  return (
+    <div className="px-4 md:px-6 lg:px-10 py-4 md:py-6 max-w-5xl">
+      <div className="mb-5 md:mb-6 flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">
+            {isAdmin ? 'Admin' : 'Director'} Workspace
+          </p>
+          <h1 className="text-2xl md:text-3xl font-light text-slate-900">My team</h1>
+          <p className="text-sm text-slate-600 mt-1 max-w-2xl">
+            Approve or reject Purchase and Loan deals from your reps before they move to operations.
+          </p>
+        </div>
+
+        {/* Scope toggle — admins only. Directors are locked to their own team. */}
+        {isAdmin && (
+          <div className="flex items-center gap-1 bg-page-100 rounded-md p-0.5 border border-page-200">
+            <ScopeButton
+              active={scope === 'mine'}
+              onClick={() => setScope('mine')}
+              label="My direct reports"
+            />
+            <ScopeButton
+              active={scope === 'all'}
+              onClick={() => setScope('all')}
+              label="All teams"
+            />
+          </div>
+        )}
+      </div>
+
+      {/* Configuration / fetch errors. Renders in both sections' place when present. */}
+      {error && (
+        <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded">
+          <p className="text-sm text-red-700">{error}</p>
+        </div>
+      )}
+
+      {/* ─── Pending approval queue ─── */}
+      <PendingQueueSection
+        deals={pendingDeals}
+        loading={loading}
+        onApprove={openApprove}
+        onReject={openReject}
+        expandedDeals={expandedPending}
+        onToggleExpand={toggleDealExpansion}
+      />
+
+      {/* ─── Team activity, grouped by rep ─── */}
+      <TeamActivitySection
+        repGroups={repGroups}
+        loading={loading}
+        expandedReps={expandedReps}
+        onToggleRep={toggleRepExpansion}
+      />
+
+      {/* ─── Decision modal ─── */}
+      {pendingAction && (
+        <DecisionModal
+          action={pendingAction}
+          onCancel={closeModal}
+          onSubmit={(notes) => submitDecision(pendingAction.kind, notes)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ───────────────────────── Scope toggle button ───────────────────────── */
+
+function ScopeButton({ active, onClick, label }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`px-3 py-1.5 text-xs uppercase tracking-wider font-medium rounded transition-colors
+        ${active
+          ? 'bg-white text-navy-900 shadow-sm'
+          : 'text-slate-600 hover:text-slate-900'}`}
+    >
+      {label}
+    </button>
+  );
+}
+
+/* ───────────────────────── Pending queue ───────────────────────── */
+
+function PendingQueueSection({ deals, loading, onApprove, onReject, expandedDeals, onToggleExpand }) {
+  return (
+    <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
+      <header className="bg-navy-900 text-chalk-50 px-4 md:px-5 py-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm md:text-base font-medium flex items-center gap-2">
+          Pending approval
+          {!loading && deals.length > 0 && (
+            <span className="ml-1 px-2 py-0.5 rounded-full bg-accent-500 text-navy-900 text-[11px] font-bold">
+              {deals.length}
+            </span>
+          )}
+        </h2>
+        <span className="text-[10px] uppercase tracking-wider text-chalk-300 font-medium">
+          Action required
+        </span>
+      </header>
+
+      <div className="p-4 md:p-5">
+        {loading ? (
+          <div className="text-sm text-slate-500 py-4 text-center">Loading queue…</div>
+        ) : deals.length === 0 ? (
+          <EmptyQueueState />
+        ) : (
+          <ul className="space-y-2">
+            {deals.map((d) => (
+              <PendingQueueRow
+                key={d.id}
+                deal={d}
+                onApprove={() => onApprove(d)}
+                onReject={() => onReject(d)}
+                expanded={expandedDeals.has(d.id)}
+                onToggleExpand={() => onToggleExpand(d.id)}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function EmptyQueueState() {
+  return (
+    <div className="text-center py-8">
+      <div className="w-12 h-12 rounded-full bg-page-50 border border-page-200
+                      flex items-center justify-center mx-auto mb-3">
+        <svg className="w-5 h-5 text-slate-400" fill="none" stroke="currentColor" strokeWidth="1.8" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="m5 13 4 4L19 7" />
+        </svg>
+      </div>
+      <p className="text-sm text-slate-700 font-medium mb-1">All caught up</p>
+      <p className="text-xs text-slate-500">No deals waiting on your approval right now.</p>
+    </div>
+  );
+}
+
+function PendingQueueRow({ deal, onApprove, onReject, expanded, onToggleExpand }) {
+  const customerName =
+    deal.contact_name ||
+    [deal.first_name, deal.last_name].filter(Boolean).join(' ') ||
+    '(no name)';
+  const location = [deal.city, deal.state].filter(Boolean).join(', ');
+  const dealTypeRaw = deal.deal_type || '';
+  const dealTypeShort = dealTypeRaw.replace(/ Equipment$/, '');
+  const decisionLabel = deal.customer_decision
+    ? deal.customer_decision[0].toUpperCase() + deal.customer_decision.slice(1)
+    : '';
+  const submittedAgo = formatRelativeTime(deal.customer_decision_at || deal.updated_at || deal.created_at);
+
+  return (
+    <li className={`bg-page-50 border rounded transition-colors overflow-hidden
+                    ${expanded ? 'border-accent-500/60' : 'border-accent-500/30 hover:border-accent-500/60'}`}>
+      <div className="p-3 md:p-4">
+        <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2 flex-wrap mb-1">
+              <span className="inline-flex items-center px-2 py-0.5 rounded
+                               bg-accent-500/15 text-accent-700 text-[10px]
+                               uppercase tracking-wider font-bold">
+                {decisionLabel || 'Customer accepted'}
+              </span>
+              {deal.quote_number && (
+                <span className="text-[11px] font-mono font-medium text-slate-700">
+                  {deal.quote_number}
+                </span>
+              )}
+              {deal.resubmission_count > 0 && (
+                <span className="text-[10px] uppercase tracking-wider font-medium text-warn-700"
+                      title="This deal has been resubmitted after a prior rejection">
+                  Attempt {deal.resubmission_count + 1}
+                </span>
+              )}
+            </div>
+            <h3 className="text-sm md:text-base font-medium text-slate-900 truncate">
+              {deal.store_name || customerName}
+            </h3>
+            <div className="text-xs text-slate-500 flex items-center gap-2 flex-wrap mt-0.5">
+              <span>{customerName}</span>
+              {location && <><span>·</span><span>{location}</span></>}
+              {dealTypeShort && <><span>·</span><span>{dealTypeShort}</span></>}
+              {deal.total_eq_cost && <><span>·</span><span className="font-mono">{deal.total_eq_cost}</span></>}
+              <span>·</span>
+              <span>From {deal.sales_rep || deal.sales_rep_email || 'a rep'}</span>
+              <span>·</span>
+              <span>{submittedAgo}</span>
+            </div>
+
+            {/* If this is a resubmission, surface the rep's notes (lives in
+                deal_revisions in the DB, but the most recent customer_decision_notes
+                is reused for the resubmit message in v31's first cut). */}
+            {deal.resubmission_count > 0 && deal.customer_decision_notes && (
+              <div className="mt-2 text-xs text-slate-600 bg-white border border-page-200 rounded px-2 py-1.5">
+                <span className="text-slate-500 font-medium">Rep's note: </span>
+                {deal.customer_decision_notes}
+              </div>
+            )}
+          </div>
+
+          {/* Action buttons — stack on mobile, inline on desktop. The Details
+              toggle sits to the left so the destructive/primary actions stay
+              at the right edge where the eye expects them. */}
+          <div className="flex flex-col sm:flex-row gap-2 flex-shrink-0">
+            <button
+              onClick={onToggleExpand}
+              aria-expanded={expanded}
+              className="px-3 py-1.5 bg-white border border-page-300 text-slate-700
+                         rounded text-xs font-medium hover:bg-page-100 hover:border-page-400
+                         transition-colors inline-flex items-center gap-1.5 whitespace-nowrap"
+            >
+              <span>{expanded ? 'Hide details' : 'Details'}</span>
+              <svg
+                className={`w-3.5 h-3.5 transition-transform ${expanded ? 'rotate-180' : ''}`}
+                fill="none" stroke="currentColor" strokeWidth="2.5" viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+            <button
+              onClick={onReject}
+              className="px-3 py-1.5 bg-white border border-page-300 text-slate-700
+                         rounded text-xs font-medium hover:bg-red-50 hover:text-bad
+                         hover:border-red-300 transition-colors"
+            >
+              Reject
+            </button>
+            <button
+              onClick={onApprove}
+              className="px-3 py-1.5 bg-navy-900 text-chalk-50 rounded text-xs
+                         font-medium hover:bg-navy-800 transition-colors"
+            >
+              Approve →
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="border-t border-accent-500/30 bg-white">
+          <PendingDealDetails deal={deal} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+/* ───────────────────────── Pending-deal detail (expandable) ───────────────────────── */
+
+/**
+ * The director's read-only deep-dive on a single pending deal. Renders inline
+ * beneath the queue row when the director clicks "Details". Six sections,
+ * each gracefully hidden when their data is empty:
+ *
+ *   1. Equipment list  — parsed from raw_csv when possible, falls back to
+ *                        equipment_selection (the human-readable text dump).
+ *   2. Contact info    — email, phone, address, city/state.
+ *   3. Coffee & Distributor — coffee program + distributor identity.
+ *   4. Sales rep notes — the rep's free-form notes from the deal sheet.
+ *   5. Customer decision notes — anything the rep recorded when the customer
+ *                                accepted (may explain edge cases).
+ *   6. Sales economics — coffee spend (3mo) + expected monthly sales.
+ *
+ * Sections render as a stacked grid so the director can scan top to bottom.
+ * Each section header is bold/uppercase to match the rest of the app's
+ * card-section style.
+ */
+function PendingDealDetails({ deal }) {
+  const equipment = useMemo(() => parseEquipmentFromRawCsv(deal.raw_csv), [deal.raw_csv]);
+  const equipmentText = (deal.equipment_selection || '').trim();
+  const hasEquipmentRows = equipment && equipment.length > 0;
+  const hasEquipmentText = !hasEquipmentRows && equipmentText.length > 0;
+
+  const contactRows = [
+    ['Email',   deal.email],
+    ['Phone',   deal.phone],
+    ['Address', deal.address],
+    ['City / State', [deal.city, deal.state].filter(Boolean).join(', ')],
+    ['Chain store',  deal.chain_store],
+  ].filter(([_, v]) => v);
+
+  const distributorRows = [
+    ['Coffee program',         deal.coffee_program],
+    ['Current coffee supplier', deal.current_coffee_supplier],
+    ['Coffee spend (last 3 months)', formatCurrencyOrEmpty(deal.coffee_spend_3mo)],
+    ['Expected monthly sales',       formatCurrencyOrEmpty(deal.expected_monthly_sales)],
+    ['Parent distributor',     deal.parent_distributor],
+    ['Parent distributor #',   deal.parent_distributor_num],
+    ['Sub group',              deal.sub_group],
+    ['Distributor warehouse',  deal.distributor_warehouse],
+    ['Distributor rep',        deal.distributor_rep_name],
+    ['Distributor rep email',  deal.distributor_rep_email],
+    ['Distributor rep phone',  deal.distributor_rep_phone],
+    ["Distributor's customer #", deal.distributor_customer_num],
+  ].filter(([_, v]) => v);
+
+  const economicsRows = [
+    ['Total equipment cost',         deal.total_eq_cost],
+    ['Monthly charged',              formatCurrencyOrEmpty(deal.total_monthly_charged)],
+  ].filter(([_, v]) => v);
+
+  const repNotes = (deal.notes || '').trim();
+  const customerDecisionNotes = (deal.customer_decision_notes || '').trim();
+
+  return (
+    <div className="p-4 md:p-5 space-y-4">
+
+      {/* Equipment */}
+      <DetailSection title="Equipment">
+        {hasEquipmentRows ? (
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-page-50 border-b border-page-200">
+                <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 font-medium">
+                  <th className="px-2 py-1.5 font-medium">Item</th>
+                  <th className="px-2 py-1.5 font-medium text-center w-12">Qty</th>
+                  <th className="px-2 py-1.5 font-medium text-right w-24">Price</th>
+                  <th className="px-2 py-1.5 font-medium text-right w-24">Subtotal</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-page-200">
+                {equipment.map((row, i) => (
+                  <tr key={i}>
+                    <td className="px-2 py-1.5 text-slate-800">{row.name || '—'}</td>
+                    <td className="px-2 py-1.5 text-center text-slate-700">{row.quantity ?? 1}</td>
+                    <td className="px-2 py-1.5 text-right font-mono text-slate-700">
+                      {formatCurrencyOrEmpty(row.unit_price)}
+                    </td>
+                    <td className="px-2 py-1.5 text-right font-mono text-slate-900 font-medium">
+                      {formatCurrencyOrEmpty(row.subtotal)}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : hasEquipmentText ? (
+          <pre className="text-xs text-slate-700 whitespace-pre-wrap font-sans bg-page-50 border border-page-200 rounded p-2.5">
+            {equipmentText}
+          </pre>
+        ) : (
+          <EmptyDetailLine text="No equipment recorded on this deal." />
+        )}
+      </DetailSection>
+
+      {/* Contact */}
+      <DetailSection title="Contact info">
+        {contactRows.length > 0 ? (
+          <DefinitionList rows={contactRows} />
+        ) : (
+          <EmptyDetailLine text="No contact info captured." />
+        )}
+      </DetailSection>
+
+      {/* Coffee & Distributor */}
+      <DetailSection title="Coffee program & distributor">
+        {distributorRows.length > 0 ? (
+          <DefinitionList rows={distributorRows} />
+        ) : (
+          <EmptyDetailLine text="No coffee or distributor info on this deal." />
+        )}
+      </DetailSection>
+
+      {/* Sales rep notes */}
+      <DetailSection title="Sales rep notes">
+        {repNotes ? (
+          <p className="text-xs text-slate-700 whitespace-pre-wrap bg-page-50 border border-page-200 rounded p-2.5 leading-relaxed">
+            {repNotes}
+          </p>
+        ) : (
+          <EmptyDetailLine text="The rep didn't leave any notes." />
+        )}
+      </DetailSection>
+
+      {/* Customer decision notes */}
+      {customerDecisionNotes && (
+        <DetailSection title="Customer decision notes">
+          <p className="text-xs text-slate-700 whitespace-pre-wrap bg-page-50 border border-page-200 rounded p-2.5 leading-relaxed">
+            {customerDecisionNotes}
+          </p>
+        </DetailSection>
+      )}
+
+      {/* Equipment costs (totals only — coffee velocity lives in the
+          distributor section above where it sits next to the volume context
+          a director uses for gross-profit math). */}
+      <DetailSection title="Equipment costs">
+        {economicsRows.length > 0 ? (
+          <DefinitionList rows={economicsRows} />
+        ) : (
+          <EmptyDetailLine text="No equipment cost totals captured." />
+        )}
+      </DetailSection>
+    </div>
+  );
+}
+
+function DetailSection({ title, children }) {
+  return (
+    <div>
+      <h4 className="text-[10px] uppercase tracking-wider text-slate-500 font-bold mb-1.5">
+        {title}
+      </h4>
+      {children}
+    </div>
+  );
+}
+
+function DefinitionList({ rows }) {
+  return (
+    <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-4 gap-y-1 text-xs">
+      {rows.map(([label, value], i) => (
+        <div key={i} className="flex items-baseline gap-2 min-w-0">
+          <dt className="text-slate-500 flex-shrink-0">{label}:</dt>
+          <dd className="text-slate-800 font-medium truncate" title={String(value)}>
+            {value}
+          </dd>
+        </div>
+      ))}
+    </dl>
+  );
+}
+
+function EmptyDetailLine({ text }) {
+  return <p className="text-[11px] text-slate-400 italic">{text}</p>;
 }
 
 /**
- * Insert a deal_bundles snapshot row for a freshly-submitted bundle deal.
+ * Best-effort parse of the deal's raw_csv (JSONB) into a clean equipment list.
  *
- * Called by DealBuilder right after submitDealToPipeline() succeeds, when
- * bundle mode is active. Best-effort but more important than activity logs:
- * if this fails, the deal exists but the dashboard / customer quote won't
- * recognize it as a bundle deal. We return the error so the caller can
- * surface it.
+ * raw_csv can be one of three shapes depending on the deal's origin:
+ *   - Deal Builder submissions: `{ equipment: [{ name, quantity, list_price, ... }] }`
+ *     or `{ equipment_items: [...] }` (older payloads)
+ *   - Legacy Jotform imports: a nested structure that varies; we don't try
+ *     to mine those — they fall back to `equipment_selection` text.
+ *   - Null / undefined: bundle-only or partial submissions.
  *
- * The single-bundle-per-deal unique index in the pipeline DB prevents
- * double-inserts on retries.
+ * Returns `null` if no recognizable structured equipment list exists. The
+ * caller falls back to the text dump in that case.
  */
-export async function insertDealBundle(payload) {
-  if (!dealPipeline) {
-    return { data: null, error: { message: 'Deal pipeline not configured.' } };
+function parseEquipmentFromRawCsv(rawCsv) {
+  if (!rawCsv) return null;
+  // Sometimes Supabase returns jsonb already-parsed; sometimes as a string
+  // (this is unusual but seen with raw_csv historically). Normalize.
+  let payload = rawCsv;
+  if (typeof rawCsv === 'string') {
+    try { payload = JSON.parse(rawCsv); } catch { return null; }
   }
-  const { data, error } = await dealPipeline
-    .from('deal_bundles')
-    .insert(payload)
-    .select()
-    .single();
-  return { data, error };
-}
-
-/**
- * Update the rollup column deals.total_monthly_charged after a bundle deal
- * is submitted. Kept separate from insertDealBundle so the caller can decide
- * whether to await or fire-and-forget.
- */
-export async function setDealTotalMonthly(dealId, totalMonthlyCharged) {
-  if (!dealPipeline) {
-    return { error: { message: 'Deal pipeline not configured.' } };
-  }
-  const { error } = await dealPipeline
-    .from('deals')
-    .update({ total_monthly_charged: totalMonthlyCharged })
-    .eq('id', dealId);
-  return { error };
-}
-
-/**
- * Fetch the deal_bundles snapshot row for a given deal id, if any.
- * Used by QuoteView to render the bundle program section on customer quotes.
- *
- * Returns { bundle: row | null, error }. Bundle is null both for non-bundle
- * deals (legitimate) and for read errors (logged).
- */
-export async function fetchDealBundle(dealId) {
-  if (!dealPipeline) {
-    return { bundle: null, error: { message: 'Deal pipeline not configured.' } };
-  }
-  if (!dealId) {
-    return { bundle: null, error: null };
-  }
-  const { data, error } = await dealPipeline
-    .from('deal_bundles')
-    .select('*')
-    .eq('deal_id', dealId)
-    .maybeSingle();
-  if (error) {
-    console.warn('Could not fetch deal_bundle:', error);
-    return { bundle: null, error };
-  }
-  return { bundle: data, error: null };
-}
-
-/* ───────────────────────── v31: Director Approval ───────────────────────── */
-
-/**
- * Fetch every deal a director has authority over — currently scoped to deals
- * whose `rep_director_email` matches the director's own email. This is the
- * data source for the MyTeamPage approval queue.
- *
- * Why email and not user_id: same reason as fetchMyDeals — the pipeline DB
- * doesn't know about catalog auth users. The rep_director_email column is
- * stamped at deal-submission time from the rep's useDirector() result, so
- * the linkage is by email.
- *
- * Filtering:
- *   - When `scope = 'mine'` (default), returns deals where rep_director_email
- *     matches the caller's email. This is the director's own queue.
- *   - When `scope = 'all'`, returns every deal currently in pending_director
- *     OR with director_decision in (approved, rejected). This is for admins
- *     who need the cross-director view. The email arg is ignored in this mode.
- *
- * The projection mirrors fetchMyDeals plus the director-decision columns so
- * the MyTeamPage can render the queue and the rep-grouped tables without a
- * second round-trip.
- */
-export async function fetchTeamDeals(directorEmail, { scope = 'mine' } = {}) {
-  if (!dealPipeline) {
-    return { data: [], error: { message: 'Deal pipeline not configured.' } };
-  }
-  if (scope === 'mine' && !directorEmail) {
-    // No email and asking for a scoped view = empty result. Safer than dumping
-    // every pending-approval deal when the auth state is half-loaded.
-    return { data: [], error: null };
-  }
-
-  const columns = `
-    id,
-    is_quote, quote_number,
-    customer_decision, customer_decision_at, customer_decision_notes,
-    director_decision, director_decision_at, director_decision_by, director_decision_notes,
-    rep_director_email, resubmission_count,
-    current_step, phase, deal_status,
-    first_name, last_name, contact_name, contact_email,
-    store_name, city, state,
-    deal_type, total_eq_cost, total_monthly_charged,
-    sales_rep, sales_rep_email,
-    raw_csv, equipment_selection,
-    created_at, updated_at
-  `;
-
-  let query = dealPipeline.from('deals').select(columns);
-
-  if (scope === 'all') {
-    // Admin view: every deal that has touched the director phase, plus any
-    // currently-pending. Using .or() lets us pull historical decisions
-    // alongside the live queue in a single fetch.
-    query = query.or('phase.eq.pending_director,director_decision.eq.approved,director_decision.eq.rejected');
-  } else {
-    query = query.eq('rep_director_email', directorEmail);
-  }
-
-  const { data, error } = await query.order('customer_decision_at', { ascending: false, nullsFirst: false });
-  return { data: data || [], error };
-}
-
-/**
- * Shared internal helper for the two director actions (approve/reject) and
- * the rep resubmit action. Wraps the canonical sequence:
- *
- *   1. UPDATE deals SET <patch>, updated_at = now()
- *   2. INSERT deal_revisions (audit trail row)
- *   3. INSERT deal_activity  (human-readable feed for the dashboard)
- *
- * Returns { data: <updated row>, error }. If the UPDATE fails the secondary
- * writes are skipped; if the audit/activity writes fail, they're logged but
- * the primary success still surfaces (matches the pattern of
- * recordCustomerDecision elsewhere in this file).
- */
-async function _directorDecision({ dealId, patch, revisionPatch, activityAction, activityDetail, actor, currentRevision }) {
-  if (!dealPipeline) {
-    return { data: null, error: { message: 'Deal pipeline not configured.' } };
-  }
-  if (!dealId) {
-    return { data: null, error: { message: 'Missing deal id.' } };
-  }
-
-  const now = new Date().toISOString();
-  const fullPatch = { ...patch, updated_at: now };
-
-  // 1) Primary update
-  const { data: updated, error: updErr } = await dealPipeline
-    .from('deals')
-    .update(fullPatch)
-    .eq('id', dealId)
-    .select()
-    .single();
-  if (updErr) return { data: null, error: updErr };
-
-  // 2) Audit log — best-effort. Don't fail the decision on a logging error.
-  await logDealRevision({
-    dealId,
-    revision: (currentRevision || 0) + 1,
-    changedBy: actor,
-    changeKind: revisionPatch.changeKind,
-    diff: revisionPatch.diff || {},
-    notes: revisionPatch.notes || null,
+  const items =
+    (Array.isArray(payload?.equipment) && payload.equipment) ||
+    (Array.isArray(payload?.equipment_items) && payload.equipment_items) ||
+    null;
+  if (!items || items.length === 0) return null;
+  return items.map((it) => {
+    const qty = Number(it.quantity ?? it.qty ?? 1) || 1;
+    const price = numberOrNull(it.list_price ?? it.unit_price ?? it.price);
+    const subtotal = price != null ? price * qty : numberOrNull(it.subtotal);
+    return {
+      name: it.name || it.item_name || it.description || it.sku || 'Unnamed item',
+      quantity: qty,
+      unit_price: price,
+      subtotal,
+    };
   });
-
-  // 3) Human-readable activity feed entry
-  await logDealActivity(dealId, activityAction, activityDetail, actor);
-
-  return { data: updated, error: null };
 }
 
-/**
- * Director approves a deal sitting in pending_director.
- *
- * Effects:
- *   - phase → ops, current_step → customer_setup (deal moves into ops queue)
- *   - director_decision → 'approved', director_decision_at/by/notes set
- *   - deal_status stays 'active' (approval is a forward move, not a state change)
- *
- * `notes` is optional on approve — the director can add context but isn't
- * required to. `actor` is whatever string the caller wants stamped on the
- * audit row (typically the director's display_name or email).
- *
- * `currentRevision` is the deal's existing quote_revision value (since we
- * reuse that column as a monotonic revision counter across all change kinds).
- * Pass 0 if you don't have it; the audit row just gets revision=1.
- */
-export async function approveDeal({ dealId, notes, actor, currentRevision }) {
-  const decision = DIRECTOR_DECISIONS_FOR_RUNTIME.approved;
-  const now = new Date().toISOString();
-  return _directorDecision({
-    dealId,
-    currentRevision,
-    patch: {
-      director_decision: 'approved',
-      director_decision_at: now,
-      director_decision_by: actor || null,
-      director_decision_notes: notes?.trim() || null,
-      phase: decision.nextPhase,
-      current_step: decision.nextStep,
-      deal_status: 'active',
-    },
-    revisionPatch: {
-      changeKind: 'director_approval',
-      diff: { decision: 'approved', next_phase: decision.nextPhase, next_step: decision.nextStep },
-      notes: notes?.trim() || null,
-    },
-    activityAction: 'Director approved',
-    activityDetail: `${actor || 'Director'} approved — deal advanced to ${decision.nextPhase} (${decision.nextStep})`,
-    actor,
-  });
+function numberOrNull(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
 }
 
+function formatCurrencyOrEmpty(v) {
+  if (v == null || v === '') return '';
+  // Handle both raw numbers and pre-formatted strings (some columns are text
+  // like total_eq_cost = "$5,400.00" from the original Jotform import).
+  if (typeof v === 'string' && /[\$,]/.test(v)) return v;
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n)) return String(v);
+  return `$${n.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+}
+
+/* ───────────────────────── Team activity (rep-grouped) ───────────────────────── */
+
+function TeamActivitySection({ repGroups, loading, expandedReps, onToggleRep }) {
+  return (
+    <section className="bg-white border border-page-200 rounded-lg overflow-hidden">
+      <header className="bg-page-100 border-b border-page-200 px-4 md:px-5 py-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm md:text-base font-medium text-slate-900">
+          Team activity
+          {!loading && repGroups.length > 0 && (
+            <span className="ml-2 text-xs font-normal text-slate-500">
+              {repGroups.length} {repGroups.length === 1 ? 'rep' : 'reps'}
+            </span>
+          )}
+        </h2>
+        <span className="text-[10px] uppercase tracking-wider text-slate-500 font-medium">
+          Read-only history
+        </span>
+      </header>
+
+      <div className="p-4 md:p-5">
+        {loading ? (
+          <div className="text-sm text-slate-500 py-4 text-center">Loading activity…</div>
+        ) : repGroups.length === 0 ? (
+          <p className="text-sm text-slate-500 text-center py-6">
+            No team activity yet. Once your reps submit and customers respond to quotes,
+            their decisions will appear here.
+          </p>
+        ) : (
+          <ul className="space-y-2">
+            {repGroups.map((group) => (
+              <RepGroup
+                key={group.email}
+                group={group}
+                expanded={expandedReps.has(group.email)}
+                onToggle={() => onToggleRep(group.email)}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function RepGroup({ group, expanded, onToggle }) {
+  const counts = useMemo(() => {
+    const c = { approved: 0, rejected: 0, other: 0 };
+    for (const d of group.deals) {
+      if (d.director_decision === 'approved') c.approved += 1;
+      else if (d.director_decision === 'rejected') c.rejected += 1;
+      else c.other += 1;
+    }
+    return c;
+  }, [group.deals]);
+
+  return (
+    <li className={`bg-page-50 border rounded transition-colors overflow-hidden
+                    ${expanded ? 'border-navy-300' : 'border-page-200 hover:border-page-300'}`}>
+      <button
+        type="button"
+        onClick={onToggle}
+        className="w-full text-left p-3 md:p-4 hover:bg-page-100/50 transition-colors"
+        aria-expanded={expanded}
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-medium text-slate-900 truncate">{group.name}</div>
+            <div className="text-xs text-slate-500 mt-0.5 flex items-center gap-3 flex-wrap">
+              <span>{group.deals.length} deal{group.deals.length === 1 ? '' : 's'}</span>
+              {counts.approved > 0 && (
+                <span className="text-ok">{counts.approved} approved</span>
+              )}
+              {counts.rejected > 0 && (
+                <span className="text-bad">{counts.rejected} rejected</span>
+              )}
+              {counts.other > 0 && (
+                <span>{counts.other} other</span>
+              )}
+            </div>
+          </div>
+          <svg
+            className={`w-4 h-4 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
+            fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="m6 9 6 6 6-6" />
+          </svg>
+        </div>
+      </button>
+
+      {expanded && (
+        <div className="border-t border-page-200 bg-white overflow-x-auto">
+          <table className="w-full text-xs md:text-sm">
+            <thead className="bg-page-50 border-b border-page-200">
+              <tr className="text-left text-[10px] uppercase tracking-wider text-slate-500 font-medium">
+                <th className="px-3 py-2 font-medium">Store / Customer</th>
+                <th className="px-3 py-2 font-medium">Type</th>
+                <th className="px-3 py-2 font-medium">Customer</th>
+                <th className="px-3 py-2 font-medium">Director</th>
+                <th className="px-3 py-2 font-medium text-right">Updated</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-page-200">
+              {group.deals.map((d) => <RepDealRow key={d.id} deal={d} />)}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </li>
+  );
+}
+
+function RepDealRow({ deal }) {
+  const customerName =
+    deal.contact_name ||
+    [deal.first_name, deal.last_name].filter(Boolean).join(' ') ||
+    '(no name)';
+  const dealTypeShort = (deal.deal_type || '').replace(/ Equipment$/, '');
+  return (
+    <tr className="hover:bg-page-50/60 transition-colors">
+      <td className="px-3 py-2">
+        <div className="font-medium text-slate-900 truncate max-w-[16rem]">
+          {deal.store_name || customerName}
+        </div>
+        <div className="text-[11px] text-slate-500 truncate max-w-[16rem]">
+          {customerName}
+          {deal.quote_number && <span className="ml-2 font-mono">{deal.quote_number}</span>}
+        </div>
+      </td>
+      <td className="px-3 py-2 whitespace-nowrap text-slate-700">{dealTypeShort || '—'}</td>
+      <td className="px-3 py-2 whitespace-nowrap">
+        <CustomerDecisionBadge value={deal.customer_decision} />
+      </td>
+      <td className="px-3 py-2 whitespace-nowrap">
+        <DirectorDecisionBadge value={deal.director_decision} resubmissions={deal.resubmission_count} />
+      </td>
+      <td className="px-3 py-2 text-right text-[11px] text-slate-500 whitespace-nowrap">
+        {formatRelativeTime(deal.updated_at || deal.created_at)}
+      </td>
+    </tr>
+  );
+}
+
+/* ───────────────────────── Decision modal ───────────────────────── */
+
 /**
- * Director rejects a deal sitting in pending_director.
+ * Modal that captures the director's notes (optional on approve, required
+ * on reject) and confirms the action.
  *
- * Effects:
- *   - phase stays 'pending_director', current_step stays 'awaiting_review'
- *     (so the deal still shows up in the rep's My Deals with the right
- *     stepper context — they need to see what happened to fix it)
- *   - director_decision → 'rejected', director_decision_at/by/notes set
- *   - deal_status flips to 'rejected' (this is what tells the rep's
- *     MyDealsPage to render the rejection banner with the Revise CTA)
- *
- * `notes` is REQUIRED here (UI enforced). The caller should validate before
- * invoking this; if notes is empty/whitespace we'll still write the update
- * but the rep won't have a reason to act on — log a warning so the omission
- * is visible during development.
+ * Renders as a fixed overlay rather than a route — the page state behind
+ * stays intact, and closing it is just a state flip in the parent. Escape
+ * key closes it. The submit button is disabled while in-flight to prevent
+ * double-clicks creating two audit rows.
  */
-export async function rejectDeal({ dealId, notes, actor, currentRevision }) {
-  if (!notes || !notes.trim()) {
-    console.warn('rejectDeal called without notes — UI should enforce this');
+function DecisionModal({ action, onCancel, onSubmit }) {
+  const { deal, kind } = action;
+  const isReject = kind === 'reject';
+  const spec = DIRECTOR_DECISIONS.find((d) => d.value === (isReject ? 'rejected' : 'approved'));
+  const requiresNotes = spec?.requiresNotes || isReject;
+
+  const [notes, setNotes] = useState('');
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState(null);
+
+  // Close on Escape — common modal pattern, no library needed.
+  useEffect(() => {
+    function handleKey(e) {
+      if (e.key === 'Escape' && !submitting) onCancel();
+    }
+    window.addEventListener('keydown', handleKey);
+    return () => window.removeEventListener('keydown', handleKey);
+  }, [onCancel, submitting]);
+
+  const notesValid = !requiresNotes || notes.trim().length > 0;
+
+  async function handleSubmit() {
+    setSubmitError(null);
+    if (!notesValid) {
+      setSubmitError('A reason is required when rejecting.');
+      return;
+    }
+    setSubmitting(true);
+    const { error } = await onSubmit(notes.trim() || null);
+    setSubmitting(false);
+    if (error) {
+      setSubmitError(error.message || 'Could not save the decision. Try again.');
+    }
+    // Success → parent closes the modal.
   }
-  const now = new Date().toISOString();
-  return _directorDecision({
-    dealId,
-    currentRevision,
-    patch: {
-      director_decision: 'rejected',
-      director_decision_at: now,
-      director_decision_by: actor || null,
-      director_decision_notes: notes?.trim() || null,
-      // Phase/step stay as pending_director / awaiting_review on purpose —
-      // see the comment above. The deal_status flip is what marks it as
-      // needing attention.
-      deal_status: 'rejected',
-    },
-    revisionPatch: {
-      changeKind: 'director_rejection',
-      diff: { decision: 'rejected', reason: notes?.trim() || null },
-      notes: notes?.trim() || null,
-    },
-    activityAction: 'Director rejected',
-    activityDetail: `${actor || 'Director'} rejected${notes?.trim() ? `: ${notes.trim()}` : ' (no reason given)'}`,
-    actor,
-  });
+
+  const customerName =
+    deal.contact_name ||
+    [deal.first_name, deal.last_name].filter(Boolean).join(' ') ||
+    '(no name)';
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-end md:items-center justify-center p-4"
+         onClick={onCancel}>
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="decision-modal-title"
+        className="bg-white rounded-lg shadow-elevated w-full max-w-md overflow-hidden animate-fadein"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <header className={`px-5 py-4 ${isReject ? 'bg-bad text-white' : 'bg-navy-900 text-chalk-50'}`}>
+          <h2 id="decision-modal-title" className="text-base font-medium">
+            {isReject ? 'Reject this deal' : 'Approve this deal'}
+          </h2>
+          <p className={`text-xs mt-0.5 ${isReject ? 'text-white/80' : 'text-chalk-300'}`}>
+            {deal.store_name || customerName}
+            {deal.quote_number && <span className="ml-2 font-mono">{deal.quote_number}</span>}
+          </p>
+        </header>
+
+        <div className="p-5 space-y-4">
+          <div className="text-sm text-slate-700 leading-relaxed">
+            {isReject ? (
+              <>
+                Rejecting sends this back to <span className="font-medium">{deal.sales_rep || 'the rep'}</span>.
+                They'll see your reason and can either revise or close the deal.
+              </>
+            ) : (
+              <>
+                Approving advances this to operations. The customer setup team will pick it up next.
+              </>
+            )}
+          </div>
+
+          <div>
+            <label className="block text-xs font-medium uppercase tracking-wider text-slate-500 mb-1.5">
+              {isReject ? 'Reason' : 'Notes (optional)'}
+              {requiresNotes && <span className="text-bad ml-1">*</span>}
+            </label>
+            <textarea
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              rows={4}
+              autoFocus
+              disabled={submitting}
+              placeholder={isReject
+                ? 'Explain why — the rep sees this and uses it to fix or close the deal.'
+                : 'Anything the operations team should know? Leave blank if not.'}
+              className="w-full p-2.5 border border-page-300 rounded text-sm bg-white
+                         focus:outline-none focus:ring-2 focus:ring-navy-300 focus:border-navy-400
+                         resize-none disabled:opacity-60 disabled:cursor-not-allowed"
+            />
+          </div>
+
+          {submitError && (
+            <div className="text-xs text-bad bg-red-50 border border-red-200 rounded p-2">
+              {submitError}
+            </div>
+          )}
+        </div>
+
+        <footer className="bg-page-50 px-5 py-3 flex items-center justify-end gap-2 border-t border-page-200">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={submitting}
+            className="px-4 py-2 text-sm font-medium text-slate-700 hover:bg-page-100
+                       rounded disabled:opacity-50 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={submitting || !notesValid}
+            className={`px-4 py-2 text-sm font-medium text-white rounded
+                        disabled:opacity-50 disabled:cursor-not-allowed transition-colors
+                        ${isReject
+                          ? 'bg-bad hover:bg-red-700'
+                          : 'bg-navy-900 hover:bg-navy-800'}`}
+          >
+            {submitting
+              ? (isReject ? 'Rejecting…' : 'Approving…')
+              : (isReject ? 'Reject deal' : 'Approve deal')}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
 }
 
-/**
- * Rep resubmits a previously-rejected deal. This is the inverse of rejectDeal:
- *
- *   - deal_status flips from 'rejected' back to 'active'
- *   - director_decision clears back to NULL (it's "pending review" again,
- *     and we use NULL rather than 'pending' here so the queue can tell
- *     "fresh submission" from "explicitly pending after a customer decision"
- *     if it ever cares)
- *   - resubmission_count is incremented so the queue can show "this is the
- *     Nth try" and the director can spot patterns
- *   - phase/step stay at pending_director / awaiting_review (the deal
- *     re-enters the director's queue, no other path makes sense)
- *
- * The rep may include `notes` explaining what they changed since the
- * rejection — this is shown to the director in the queue detail view so
- * they don't have to diff manually.
- *
- * Note: this function doesn't accept a deal-edit payload — it only flips
- * the workflow columns. If the rep needs to change equipment/pricing on
- * resubmit, that's a separate edit flow (TODO for a future increment;
- * v31 ships resubmit-as-is and lets the rep add a note).
- */
-export async function resubmitDeal({ dealId, notes, actor, currentRevision, currentResubmissionCount }) {
-  return _directorDecision({
-    dealId,
-    currentRevision,
-    patch: {
-      director_decision: null,
-      director_decision_at: null,
-      director_decision_by: null,
-      director_decision_notes: null,
-      deal_status: 'active',
-      phase: 'pending_director',
-      current_step: 'awaiting_review',
-      resubmission_count: (currentResubmissionCount || 0) + 1,
-    },
-    revisionPatch: {
-      changeKind: 'rep_resubmit',
-      diff: {
-        action: 'resubmit',
-        new_resubmission_count: (currentResubmissionCount || 0) + 1,
-      },
-      notes: notes?.trim() || null,
-    },
-    activityAction: 'Rep resubmitted for director review',
-    activityDetail: notes?.trim()
-      ? `Resubmitted (attempt ${(currentResubmissionCount || 0) + 1}): ${notes.trim()}`
-      : `Resubmitted (attempt ${(currentResubmissionCount || 0) + 1})`,
-    actor,
-  });
+/* ───────────────────────── Status badges ───────────────────────── */
+
+function CustomerDecisionBadge({ value }) {
+  if (!value || value === 'pending') {
+    return <span className="text-[11px] text-slate-500">—</span>;
+  }
+  const map = {
+    lease:    { label: 'Lease',    cls: 'bg-navy-50 text-navy-800 border-navy-200' },
+    finance:  { label: 'Finance',  cls: 'bg-navy-50 text-navy-800 border-navy-200' },
+    purchase: { label: 'Purchase', cls: 'bg-accent-500/15 text-accent-700 border-accent-500/30' },
+    loan:     { label: 'Loan',     cls: 'bg-accent-500/15 text-accent-700 border-accent-500/30' },
+    declined: { label: 'Declined', cls: 'bg-page-100 text-slate-600 border-page-200' },
+  };
+  const spec = map[value] || { label: value, cls: 'bg-page-100 text-slate-700 border-page-200' };
+  return (
+    <span className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium ${spec.cls}`}>
+      {spec.label}
+    </span>
+  );
 }
 
+function DirectorDecisionBadge({ value, resubmissions }) {
+  if (value === 'approved') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium bg-ok/10 text-ok border-ok/30">
+        Approved
+      </span>
+    );
+  }
+  if (value === 'rejected') {
+    return (
+      <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium bg-red-50 text-bad border-red-200">
+        Rejected
+        {resubmissions > 0 && (
+          <span className="ml-1 font-normal text-slate-500 normal-case">· {resubmissions}× resubmitted</span>
+        )}
+      </span>
+    );
+  }
+  if (value === 'pending') {
+    return (
+      <span className="inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] uppercase tracking-wider font-medium bg-warn/10 text-warn-700 border-warn/30">
+        Pending
+      </span>
+    );
+  }
+  return <span className="text-[11px] text-slate-500">—</span>;
+}
+
+/* ───────────────────────── Formatting helpers ───────────────────────── */
+
 /**
- * Internal map version of DIRECTOR_DECISIONS, indexed by `value` for fast
- * lookup. We can't import from pipelineSteps.js without creating a circular
- * dependency (pipelineSteps doesn't import from dealPipeline, but importing
- * here means dealPipeline also depends on pipelineSteps — that's fine,
- * we already have unidirectional flow there).
- *
- * The reason we keep this local rather than importing DIRECTOR_DECISIONS:
- * dealPipeline.js historically has been free of pipelineSteps imports, and
- * the approve/reject helpers only need two specific entries. Inlining is
- * simpler than introducing the dependency just for this. If we end up
- * needing more pipelineSteps constants here, switch to the import.
+ * Same shape as MyDealsPage's formatRelativeTime — kept inline rather than
+ * extracted to a util because it's small and the two pages don't share
+ * any other code. If a third caller appears, lift to a shared util.
  */
-const DIRECTOR_DECISIONS_FOR_RUNTIME = {
-  approved: { nextPhase: 'ops',              nextStep: 'customer_setup' },
-  rejected: { nextPhase: 'pending_director', nextStep: 'awaiting_review' },
-};
+function formatRelativeTime(isoString) {
+  if (!isoString) return 'recently';
+  const then = new Date(isoString);
+  const now = new Date();
+  const diffMs = now.getTime() - then.getTime();
+  const diffMin = Math.round(diffMs / 60000);
+  if (diffMin < 1)   return 'just now';
+  if (diffMin < 60)  return `${diffMin} min ago`;
+  const diffHr = Math.round(diffMin / 60);
+  if (diffHr < 24)   return `${diffHr} hr ago`;
+  const diffDay = Math.round(diffHr / 24);
+  if (diffDay === 1) return 'yesterday';
+  if (diffDay < 7)   return `${diffDay} days ago`;
+  return then.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+}
+
+/* Note: PHASE_LABELS and STEP_LABELS are imported but currently unused —
+ * they're available for future inline stepper rendering if we want to
+ * expand the RepDealRow into a fuller detail view. Keeping the imports
+ * documents the intent and avoids re-adding them later. */
+void PHASE_LABELS;
+void STEP_LABELS;
