@@ -501,6 +501,8 @@ function PendingDealDetails({ deal }) {
   const distributorRows = [
     ['Coffee program',         deal.coffee_program],
     ['Current coffee supplier', deal.current_coffee_supplier],
+    ['Coffee spend (last 3 months)', formatCurrencyOrEmpty(deal.coffee_spend_3mo)],
+    ['Expected monthly sales',       formatCurrencyOrEmpty(deal.expected_monthly_sales)],
     ['Parent distributor',     deal.parent_distributor],
     ['Parent distributor #',   deal.parent_distributor_num],
     ['Sub group',              deal.sub_group],
@@ -512,8 +514,6 @@ function PendingDealDetails({ deal }) {
   ].filter(([_, v]) => v);
 
   const economicsRows = [
-    ['Coffee spend (last 3 months)', formatCurrencyOrEmpty(deal.coffee_spend_3mo)],
-    ['Expected monthly sales',       formatCurrencyOrEmpty(deal.expected_monthly_sales)],
     ['Total equipment cost',         deal.total_eq_cost],
     ['Monthly charged',              formatCurrencyOrEmpty(deal.total_monthly_charged)],
   ].filter(([_, v]) => v);
@@ -600,12 +600,14 @@ function PendingDealDetails({ deal }) {
         </DetailSection>
       )}
 
-      {/* Sales economics */}
-      <DetailSection title="Sales economics">
+      {/* Equipment costs (totals only — coffee velocity lives in the
+          distributor section above where it sits next to the volume context
+          a director uses for gross-profit math). */}
+      <DetailSection title="Equipment costs">
         {economicsRows.length > 0 ? (
           <DefinitionList rows={economicsRows} />
         ) : (
-          <EmptyDetailLine text="No economic context captured." />
+          <EmptyDetailLine text="No equipment cost totals captured." />
         )}
       </DetailSection>
     </div>
