@@ -17,6 +17,7 @@ import LookupListsAdmin from './components/admin/LookupListsAdmin.jsx';
 import UsersAdmin from './components/admin/UsersAdmin.jsx';
 import DealBuilder from './components/DealBuilder.jsx';
 import MyDealsPage from './components/MyDealsPage.jsx';
+import MyTeamPage from './components/MyTeamPage.jsx';
 import ProfilePage from './components/ProfilePage.jsx';
 import FaqPage from './components/FaqPage.jsx';
 import QuoteView from './components/QuoteView.jsx';
@@ -150,6 +151,23 @@ export default function App() {
           session={session}
           navigate={navigate}
         />
+      )}
+
+      {/* My Team — director's & admin's approval queue (v31). Gated to
+          managers and admins only; reps who hit the URL directly get the
+          friendly "no access" panel below. */}
+      {route.name === 'my-team' && isManagerOrAdmin && (
+        <MyTeamPage
+          profile={profile}
+          session={session}
+          navigate={navigate}
+        />
+      )}
+
+      {route.name === 'my-team' && !isManagerOrAdmin && (
+        <div className="px-4 md:px-10 py-10 text-center">
+          <p className="text-slate-500">You don't have access to this section.</p>
+        </div>
       )}
 
       {route.name === 'profile' && (
