@@ -1,5 +1,6 @@
 import RonnocoLogo from './RonnocoLogo.jsx';
 import UserMenu from './UserMenu.jsx';
+import NotificationBell from './NotificationBell.jsx';
 
 // Regular nav tabs — the main browsable areas. Admin lives in the user menu now;
 // New Deal is a separate primary CTA, rendered as an outlined button beside the
@@ -83,12 +84,24 @@ export default function Shell({ profile, session, routeName, navigate, children 
             </button>
           </nav>
 
-          <UserMenu
-            profile={profile}
-            session={session}
-            navigate={navigate}
-            isAdmin={isAdmin}
-          />
+          <div className="flex items-center gap-1">
+            {/* v32: notification bell. Hidden for customer-role users (they
+                don't have deals to be notified about) and for unauthenticated
+                sessions (the bell component also guards on recipientEmail). */}
+            {role !== 'customer' && session?.user?.email && (
+              <NotificationBell
+                recipientEmail={session.user.email}
+                navigate={navigate}
+              />
+            )}
+
+            <UserMenu
+              profile={profile}
+              session={session}
+              navigate={navigate}
+              isAdmin={isAdmin}
+            />
+          </div>
         </div>
       </header>
 

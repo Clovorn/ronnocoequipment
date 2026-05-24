@@ -8,6 +8,7 @@ import {
   isDealPipelineConfigured,
 } from '../lib/dealPipeline.js';
 import { DECISIONS, getStepStatuses, isTerminalDenial, PHASE_LABELS, STEP_LABELS } from '../lib/pipelineSteps.js';
+import DealDetailView from './DealDetailView.jsx';
 
 /**
  * MyDealsPage — the rep's personal workspace.
@@ -610,21 +611,11 @@ function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision, onRes
  *     any further edits
  */
 function SubmissionDetail({ row, isQuote, onEditQuote, onDecision, onResubmit }) {
-  const customerName =
-    row.contact_name ||
-    [row.first_name, row.last_name].filter(Boolean).join(' ') ||
-    '(no name)';
-  const fullAddress = [row.address, row.city, row.state, row.zip_code].filter(Boolean).join(', ');
-  // equipment_items lives in raw_csv per the submit-time snapshot
-  const equipmentItems = Array.isArray(row.raw_csv?.equipment_items)
-    ? row.raw_csv.equipment_items
-    : [];
-
   return (
     <div className="p-4 md:p-5 space-y-5">
-      {/* Phase stepper — only render when phase is in {leasing, ops}. Sales-
-          phase quotes don't need a stepper (there's only one step). */}
-      {(row.phase === 'leasing' || row.phase === 'ops') && (
+      {/* Phase stepper — only render when phase is in {leasing, ops, pending_director}.
+          Sales-phase quotes don't need a stepper (there's only one step). */}
+      {(row.phase === 'leasing' || row.phase === 'ops' || row.phase === 'pending_director') && (
         <div>
           <SectionLabel>
             {PHASE_LABELS[row.phase] || row.phase} Progress
@@ -646,57 +637,13 @@ function SubmissionDetail({ row, isQuote, onEditQuote, onDecision, onResubmit })
         </div>
       )}
 
-      {/* Customer + store grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <DetailCard title="Customer">
-          <DetailField label="Name" value={customerName} />
-          {row.contact_email && <DetailField label="Email" value={row.contact_email} mono />}
-          {(row.contact_cell || row.phone) && <DetailField label="Phone" value={row.contact_cell || row.phone} mono />}
-        </DetailCard>
-        <DetailCard title="Store">
-          <DetailField label="Name" value={row.store_name || '—'} />
-          {fullAddress && <DetailField label="Address" value={fullAddress} />}
-          {row.deal_type && <DetailField label="Deal type" value={row.deal_type} />}
-        </DetailCard>
-      </div>
-
-      {/* Equipment */}
-      <div>
-        <SectionLabel>
-          Equipment
-          {equipmentItems.length > 0 && (
-            <span className="ml-1 text-slate-400 font-normal text-[10px]">
-              · {equipmentItems.length} item{equipmentItems.length === 1 ? '' : 's'}
-            </span>
-          )}
-          {row.total_eq_cost && (
-            <span className="ml-2 text-slate-500 font-mono text-[11px]">
-              {row.total_eq_cost}
-            </span>
-          )}
-        </SectionLabel>
-        {equipmentItems.length > 0 ? (
-          <ul className="space-y-1 text-xs">
-            {equipmentItems.map((item, idx) => (
-              <li key={idx} className="flex items-center justify-between gap-2 bg-page-50 px-3 py-1.5 rounded border border-page-200">
-                <span className="min-w-0 flex-1 truncate">
-                  <span className="font-medium text-slate-700">{item.quantity}×</span>{' '}
-                  <span className="text-slate-700">{item.description}</span>
-                  {item.model && <span className="text-slate-400"> ({item.model})</span>}
-                </span>
-                <span className="text-slate-500 font-mono whitespace-nowrap">
-                  ${((item.list_price || 0) * (item.quantity || 1)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                </span>
-              </li>
-            ))}
-          </ul>
-        ) : row.equipment_selection ? (
-          <pre className="text-xs text-slate-700 whitespace-pre-wrap bg-page-50 border border-page-200 rounded p-3 font-mono">
-            {row.equipment_selection}
-          </pre>
-        ) : (
-          <div className="text-xs text-slate-500 italic">No equipment recorded.</div>
-        )}
+      {/* v32: Full deal detail view (same six sections the director sees on
+          My Team). Replaces the narrower Customer/Store/Equipment trio that
+          lived here previously. Reps can now see everything they submitted
+          plus customer + director decision feedback inline, without needing
+          access to the Pipeline dashboard. */}
+      <div className="bg-white border border-page-200 rounded-lg overflow-hidden">
+        <DealDetailView deal={row} />
       </div>
 
       {/* Actions — different for quotes vs deals */}
@@ -1138,25 +1085,9 @@ function SectionLabel({ children }) {
   );
 }
 
-function DetailCard({ title, children }) {
-  return (
-    <div className="bg-page-50 border border-page-200 rounded p-3">
-      <SectionLabel>{title}</SectionLabel>
-      <div className="space-y-1">{children}</div>
-    </div>
-  );
-}
-
-function DetailField({ label, value, mono }) {
-  return (
-    <div className="flex items-baseline gap-2 text-xs">
-      <span className="text-slate-500 min-w-[4rem]">{label}:</span>
-      <span className={`text-slate-900 min-w-0 flex-1 break-words ${mono ? 'font-mono' : ''}`}>
-        {value}
-      </span>
-    </div>
-  );
-}
+// DetailCard / DetailField removed in v32 — the rich SubmissionDetail
+// now embeds DealDetailView (shared with MyTeamPage) rather than building
+// its own narrower customer/store grid.
 
 function StepPill({ step }) {
   return (

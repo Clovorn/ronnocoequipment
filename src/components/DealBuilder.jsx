@@ -860,6 +860,17 @@ ${repName}`;
   async function persistBundleSnapshot(dealId) {
     if (!bundleMode || !bundleConfig || !bundlePricing) return true;
 
+    // v32: write the rollup first. deals.total_monthly_charged is the
+    // critical column for the Pipeline dashboard and MyTeamPage detail view
+    // — it's what reps + ops + directors see as "customer monthly". Even
+    // if the deal_bundles snapshot insert below fails, the rollup will
+    // still be correct.
+    const { error: rollupErr } = await setDealTotalMonthly(dealId, bundlePricing.monthlyCharged);
+    if (rollupErr) {
+      console.warn('Could not set deals.total_monthly_charged:', rollupErr);
+      // Non-blocking; keep going to the snapshot.
+    }
+
     const snapshot = {
       deal_id:                 dealId,
       position:                1,
@@ -890,12 +901,6 @@ ${repName}`;
       return false;
     }
 
-    // Update the rollup. Single-bundle today, so total === monthly_charged.
-    const { error: rollupErr } = await setDealTotalMonthly(dealId, bundlePricing.monthlyCharged);
-    if (rollupErr) {
-      console.warn('Could not set deals.total_monthly_charged:', rollupErr);
-      // Snapshot is in; rollup is secondary. Don't fail.
-    }
     return true;
   }
 
@@ -912,12 +917,30 @@ ${repName}`;
     }
     setSubmitting(true);
 
+    // v32 routing fix: direct-submit Purchase and Loan deals require director
+    // approval before they can proceed to operations. Lease and Finance deals
+    // continue to route into the leasing phase as before. This branch
+    // mirrors what happens after a customer accepts a quote with
+    // decision='purchase' or 'loan' — both flows funnel through director
+    // review when bypassing the customer-quote step.
+    //
+    // Pre-v32 behavior was a hardcoded phase='leasing' here, which meant
+    // 100% of direct-submit Loan deals (Loans are never quoted) were
+    // silently misrouted and never reached the director's queue. Loren
+    // had to manually backfill each one via SQL.
+    //
+    // If the rep has no director assigned (rep_director_email null), we
+    // still route to pending_director but the My Team queue won't find
+    // it — surfaces as a data hygiene issue admins can fix in #/admin/users.
+    const dealType = trimOrNull(draft.deal_type);
+    const needsDirectorApproval = dealType === 'Purchase Equipment' || dealType === 'Loan Equipment';
+
     const pipelinePayload = {
       ...buildBasePayload(),
       // Direct-deal lifecycle: skips the sales/quote phase entirely.
       is_quote:              false,
-      current_step:          'submitted',
-      phase:                 'leasing',
+      current_step:          needsDirectorApproval ? 'awaiting_review' : 'submitted',
+      phase:                 needsDirectorApproval ? 'pending_director' : 'leasing',
       deal_status:           'active',
       customer_decision:     'pending',
     };

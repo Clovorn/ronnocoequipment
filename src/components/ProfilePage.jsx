@@ -1,5 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
+import {
+  fetchEmailNotificationsEnabled,
+  setEmailNotificationsEnabled,
+} from '../lib/notifications.js';
 
 /**
  * ProfilePage — lets a user edit their own profile.
@@ -31,6 +35,13 @@ export default function ProfilePage({ profile, session, navigate, onProfileUpdat
         session={session}
         onUpdated={onProfileUpdated}
       />
+
+      <NotificationsCard
+        profile={profile}
+        session={session}
+      />
+
+      <InstallAppCard />
 
       <PasswordCard />
     </div>
@@ -230,6 +241,244 @@ function PasswordCard() {
             {saving ? 'Updating…' : 'Update password'}
           </button>
         </div>
+      </div>
+    </section>
+  );
+}
+
+/* ────────── Notifications card (v32) ────────── */
+
+/**
+ * NotificationsCard — controls the rep's email-notifications preference.
+ * In-app bell notifications are always on; this toggle only affects email
+ * delivery from the Pipeline dashboard.
+ *
+ * The flag is mirrored into pipeline `team_members.email_notifications_enabled`
+ * (added in v32 migration). The email sender on the dashboard side reads
+ * this column before sending; in-app notifications always fire.
+ */
+function NotificationsCard({ profile, session }) {
+  const [enabled, setEnabled] = useState(true);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState(null);
+  const [savedAt, setSavedAt] = useState(null);
+
+  // Load current preference on mount
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const { enabled: e, error: err } = await fetchEmailNotificationsEnabled(session.user.email);
+      if (cancelled) return;
+      if (err) setError(err.message);
+      setEnabled(e);
+      setLoading(false);
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [session.user.email]);
+
+  async function toggle() {
+    if (saving || loading) return;
+    const next = !enabled;
+    setSaving(true);
+    setError(null);
+    const { error: err } = await setEmailNotificationsEnabled(
+      session.user.email,
+      next,
+      profile?.display_name
+    );
+    setSaving(false);
+    if (err) {
+      setError(err.message);
+      return;
+    }
+    setEnabled(next);
+    setSavedAt(Date.now());
+    setTimeout(() => setSavedAt(null), 2500);
+  }
+
+  return (
+    <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
+      <header className="px-4 md:px-5 py-3 border-b border-page-100">
+        <h2 className="text-sm font-medium text-slate-900">Notifications</h2>
+      </header>
+      <div className="p-4 md:p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div className="flex-1 min-w-0">
+            <p className="text-sm text-slate-900 font-medium">
+              Email notifications
+            </p>
+            <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+              Get an email when there's activity on your deals (decisions, phase
+              changes, ops notes). When off, you'll still see everything in the
+              notification bell at the top of the app.
+            </p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={enabled}
+            disabled={loading || saving}
+            onClick={toggle}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+                       flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-navy-500/30
+                       disabled:opacity-40 disabled:cursor-not-allowed
+                       ${enabled ? 'bg-navy-900' : 'bg-slate-300'}`}
+          >
+            <span
+              className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform shadow
+                         ${enabled ? 'translate-x-5' : 'translate-x-0.5'}`}
+            />
+          </button>
+        </div>
+
+        {error && (
+          <div className="p-3 bg-red-50 border border-red-200 rounded">
+            <p className="text-sm text-red-700">{error}</p>
+          </div>
+        )}
+
+        {savedAt && (
+          <p className="text-xs text-ok font-medium">
+            ✓ Saved. Email is now {enabled ? 'on' : 'off'}.
+          </p>
+        )}
+
+        <div className="pt-2 border-t border-page-100">
+          <p className="text-[11px] text-slate-500">
+            <span className="font-semibold text-slate-700">In-app notifications</span> can't be
+            turned off — they're how you see deal activity inside the Deal Builder.
+            Email is just the optional second channel.
+          </p>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/* ────────── Install app card (v32) ────────── */
+
+/**
+ * InstallAppCard — surfaces the PWA install instructions for reps who
+ * want a desktop icon or home-screen shortcut. The browser handles the
+ * actual install prompt; this card just explains what to do and
+ * acknowledges the platform differences:
+ *
+ *   - Chrome / Edge / Brave on desktop: an install icon appears in the
+ *     URL bar, plus a programmatic "Install app" button when the
+ *     beforeinstallprompt event fires (captured below).
+ *   - iOS Safari: no programmatic prompt; rep must Share → Add to Home Screen.
+ *   - Android Chrome: usually shows an automatic mini-infobar, but Add
+ *     to Home Screen from the menu also works.
+ *
+ * When the beforeinstallprompt event has been captured (set in main.jsx),
+ * a literal "Install app" button is shown that fires the prompt directly.
+ */
+function InstallAppCard() {
+  const [installPromptAvailable, setInstallPromptAvailable] = useState(
+    !!window.__deferredInstallPrompt
+  );
+  const [installing, setInstalling] = useState(false);
+  const [outcome, setOutcome] = useState(null);
+
+  // The prompt may arrive after the card mounts. Listen for the event
+  // (re-fired into a window-level custom event by main.jsx).
+  useEffect(() => {
+    function onCustom() {
+      setInstallPromptAvailable(true);
+    }
+    window.addEventListener('pwa-install-available', onCustom);
+    return () => window.removeEventListener('pwa-install-available', onCustom);
+  }, []);
+
+  async function handleInstall() {
+    const promptEvent = window.__deferredInstallPrompt;
+    if (!promptEvent) return;
+    setInstalling(true);
+    try {
+      promptEvent.prompt();
+      const choice = await promptEvent.userChoice;
+      setOutcome(choice?.outcome === 'accepted' ? 'installed' : 'dismissed');
+      // The prompt can only be used once.
+      window.__deferredInstallPrompt = null;
+      setInstallPromptAvailable(false);
+    } catch (e) {
+      setOutcome('error');
+    } finally {
+      setInstalling(false);
+    }
+  }
+
+  return (
+    <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
+      <header className="px-4 md:px-5 py-3 border-b border-page-100">
+        <h2 className="text-sm font-medium text-slate-900">Install Deal Builder</h2>
+      </header>
+      <div className="p-4 md:p-5 space-y-3">
+        <p className="text-sm text-slate-700 leading-relaxed">
+          Add the Deal Builder to your desktop or phone home screen so it
+          launches like an app instead of a browser tab.
+        </p>
+
+        {installPromptAvailable && (
+          <div className="pt-1">
+            <button
+              onClick={handleInstall}
+              disabled={installing}
+              className="px-4 py-2 bg-navy-900 text-chalk-50 text-sm font-medium rounded
+                         hover:bg-navy-800 disabled:opacity-40 disabled:cursor-not-allowed
+                         transition-colors inline-flex items-center gap-2"
+            >
+              {installing ? 'Installing…' : 'Install app'}
+            </button>
+            {outcome === 'installed' && (
+              <p className="text-xs text-ok font-medium mt-2">
+                ✓ Installed. Look for the Deal Builder icon on your dock or home screen.
+              </p>
+            )}
+            {outcome === 'dismissed' && (
+              <p className="text-xs text-slate-500 mt-2">
+                No problem — you can install later from this same screen.
+              </p>
+            )}
+            {outcome === 'error' && (
+              <p className="text-xs text-bad mt-2">
+                Couldn't open the install prompt. Try the manual steps below.
+              </p>
+            )}
+          </div>
+        )}
+
+        <details className="pt-2 border-t border-page-100">
+          <summary className="text-xs font-semibold text-slate-700 cursor-pointer hover:text-navy-700">
+            Manual install instructions
+          </summary>
+          <div className="mt-3 space-y-3 text-xs text-slate-700 leading-relaxed">
+            <div>
+              <p className="font-semibold text-slate-800">Desktop (Chrome, Edge, Brave)</p>
+              <p className="text-slate-600">
+                Click the small install icon at the right side of the URL bar,
+                or open the browser menu and choose <span className="font-medium">Install Deal Builder</span>.
+              </p>
+            </div>
+            <div>
+              <p className="font-semibold text-slate-800">iPhone or iPad (Safari)</p>
+              <p className="text-slate-600">
+                Tap the Share button (the square with the up arrow), scroll down,
+                and choose <span className="font-medium">Add to Home Screen</span>. The Deal
+                Builder icon will appear on your home screen.
+              </p>
+            </div>
+            <div>
+              <p className="font-semibold text-slate-800">Android (Chrome)</p>
+              <p className="text-slate-600">
+                Tap the three-dot menu in the top-right and choose
+                <span className="font-medium"> Install app</span> or <span className="font-medium">Add to Home Screen</span>.
+              </p>
+            </div>
+          </div>
+        </details>
       </div>
     </section>
   );
