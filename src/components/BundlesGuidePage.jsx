@@ -11,7 +11,7 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
           Is this customer in a program, or not?
         </h1>
         <p className="text-sm md:text-base text-chalk-100/90 leading-relaxed max-w-4xl">
-          Most business goes through distributors. The key question is not <strong>distributor or not</strong>. The key question is <strong>program or not</strong>.
+          Most business goes through distributors. The key question is not <strong>distributor or not</strong>. The key question is <strong>program or not</strong>. When the customer is a fit, the Distributor Program is a complete beverage growth program, not just an equipment path.
         </p>
 
         <div className="mt-5 flex flex-wrap gap-3">
@@ -64,7 +64,7 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
             'Use the bundle program path.',
             'Digital media delivery and marketing are included.',
             'Service is included when the customer is in compliance with the service agreement.',
-            'This is the stronger full-program sell.',
+            'This is the stronger full-program sell built around equipment, media, service, and approved product participation.',
           ]}
           tone="emerald"
         />
@@ -108,7 +108,7 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
           <VisualNote
             emoji="⭐"
             title="Better overall story"
-            text="You are not just selling equipment. You are selling a more complete supported lease program."
+            text="You are not just selling equipment. You are selling a beverage growth program that helps the store look better, run smoother, and sell more product."
             linkLabel="Deal type FAQ"
             onClick={() => navigate?.('faq', { anchor: 'deal-types-explained' })}
           />

@@ -1,4 +1,5 @@
 import RonnocoLogo from './RonnocoLogo.jsx';
+import { DISTRIBUTOR_PROGRAM_CUSTOMER_SUMMARY, DISTRIBUTOR_PROGRAM_BENEFITS, DISTRIBUTOR_PROGRAM_COMPLIANCE, DISTRIBUTOR_PROGRAM_REP_CLOSING } from '../help/distributorProgramMessaging.js';
 
 export default function SellSheetPage({ navigate, profile, session }) {
   const repName = profile?.display_name || session?.user?.email || 'Your Ronnoco Representative';
@@ -20,7 +21,7 @@ export default function SellSheetPage({ navigate, profile, session }) {
                   A complete beverage program through your distributor
                 </h1>
                 <p className="text-sm md:text-base print:text-sm text-chalk-100/90 leading-relaxed max-w-3xl">
-                  The Distributor Program gives your business access to new beverage equipment, ongoing service support, and digital media delivery through a professionally supported program, without forcing you to manage every piece separately.
+                  {DISTRIBUTOR_PROGRAM_CUSTOMER_SUMMARY}
                 </p>
               </div>
               <div className="flex-shrink-0 hidden sm:block print:block">
@@ -84,13 +85,9 @@ export default function SellSheetPage({ navigate, profile, session }) {
                     Program benefits
                   </h2>
                   <ul className="space-y-2.5">
-                    <Bullet text="New beverage equipment" />
-                    <Bullet text="Digital beverage media delivery" />
-                    <Bullet text="Service support while in compliance" />
-                    <Bullet text="A simple ordering path through the distributor" />
-                    <Bullet text="A more professional in-store beverage presentation" />
-                    <Bullet text="A scalable program for single or multi-location operators" />
-                    <Bullet text="A better way to grow beverage sales without overcomplicating the process" />
+                    {DISTRIBUTOR_PROGRAM_BENEFITS.map((item) => (
+                      <Bullet key={item} text={item} />
+                    ))}
                   </ul>
                 </section>
 
@@ -102,7 +99,7 @@ export default function SellSheetPage({ navigate, profile, session }) {
                     Ongoing support stays connected to the program
                   </h2>
                   <p className="text-sm print:text-[12px] text-slate-700 leading-relaxed">
-                    As long as the location remains in compliance with the program agreement, including purchasing approved beverage products through the required distributor or program channel, the included benefits continue. Equipment, service, and media support are all tied to supporting the beverage program.
+                    {DISTRIBUTOR_PROGRAM_COMPLIANCE}
                   </p>
                 </section>
               </div>
@@ -115,7 +112,7 @@ export default function SellSheetPage({ navigate, profile, session }) {
                     Note from your sales representative
                   </p>
                   <p className="text-sm print:text-[12px] text-slate-700 leading-relaxed">
-                    Our goal is not just to place equipment in your location. Our goal is to help you build a beverage program that looks better, runs smoother, and sells more product. I would be glad to review your goals, recommend the right equipment package, and prepare a quote tailored to your business.
+                    {DISTRIBUTOR_PROGRAM_REP_CLOSING} I would be glad to review your goals, recommend the right equipment package, and prepare a quote tailored to your business.
                   </p>
                 </div>
 

@@ -1,4 +1,5 @@
 import { BUNDLES_GUIDE_SECTIONS } from './bundlesGuideContent.js';
+import { DISTRIBUTOR_PROGRAM_BENEFITS, DISTRIBUTOR_PROGRAM_COMPLIANCE, DISTRIBUTOR_PROGRAM_CUSTOMER_SUMMARY } from './distributorProgramMessaging.js';
 
 /**
  * Ronnoco Deal Builder — Help & FAQ content.
@@ -141,6 +142,7 @@ export const FAQ_SECTIONS = [
         ],
       },
       { type: 'p', text: 'Each one comes with a fully configured equipment list (brewers, servers, accessories) at a fixed monthly fee.' },
+      { type: 'ul', items: DISTRIBUTOR_PROGRAM_BENEFITS },
 
       { type: 'h3', text: 'Important rules' },
       { type: 'p', text: 'Every distributor bundle follows these rules:' },
