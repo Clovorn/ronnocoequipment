@@ -215,14 +215,6 @@ function DecisionCard({ emoji, title, answer, text }) {
         {answer}
       </div>
       <p className="text-sm text-slate-600 leading-relaxed">{text}</p>
-      {linkLabel && onClick && (
-        <button
-          onClick={onClick}
-          className="mt-3 text-sm font-medium text-navy-700 hover:text-navy-900 underline decoration-navy-300 hover:decoration-navy-700"
-        >
-          {linkLabel} →
-        </button>
-      )}
     </div>
   );
 }
