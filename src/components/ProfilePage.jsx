@@ -52,20 +52,25 @@ export default function ProfilePage({ profile, session, navigate, onProfileUpdat
 
 function DisplayInfoCard({ profile, session, onUpdated }) {
   const [name, setName] = useState(profile?.display_name || '');
+  const [title, setTitle] = useState(profile?.title || '');
+  const [phone, setPhone] = useState(profile?.phone || '');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
   const [savedAt, setSavedAt] = useState(null);
 
   const role = profile?.role || 'sales';
   const roleLabel = { admin: 'Admin', director: 'Director', sales: 'Sales', customer: 'Customer' }[role];
-  const isDirty = name.trim() !== (profile?.display_name || '');
+  const isDirty =
+    name.trim() !== (profile?.display_name || '') ||
+    title.trim() !== (profile?.title || '') ||
+    phone.trim() !== (profile?.phone || '');
 
   async function save() {
     if (!isDirty) return;
     setSaving(true); setError(null);
     const { data, error } = await supabase
       .from('user_profiles')
-      .update({ display_name: name.trim() || null })
+      .update({ display_name: name.trim() || null, title: title.trim() || null, phone: phone.trim() || null })
       .eq('user_id', session.user.id)
       .select()
       .single();
@@ -104,6 +109,42 @@ function DisplayInfoCard({ profile, session, onUpdated }) {
         </label>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1 font-semibold">
+              Title
+            </span>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Sales Representative"
+              className="w-full px-3 py-2 bg-page-50 border border-page-200 rounded text-sm
+                         focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10 focus:bg-white
+                         focus:outline-none transition-colors"
+            />
+            <span className="block text-[11px] text-slate-500 mt-1">
+              Optional. Used on customer-facing documents.
+            </span>
+          </label>
+
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1 font-semibold">
+              Phone
+            </span>
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="(555) 555-5555"
+              className="w-full px-3 py-2 bg-page-50 border border-page-200 rounded text-sm
+                         focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10 focus:bg-white
+                         focus:outline-none transition-colors"
+            />
+            <span className="block text-[11px] text-slate-500 mt-1">
+              Optional. Used on customer-facing documents.
+            </span>
+          </label>
+
           <div>
             <span className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1 font-semibold">
               Email
@@ -185,6 +226,42 @@ function PasswordCard() {
       </header>
       <div className="p-4 md:p-5 space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1 font-semibold">
+              Title
+            </span>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Sales Representative"
+              className="w-full px-3 py-2 bg-page-50 border border-page-200 rounded text-sm
+                         focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10 focus:bg-white
+                         focus:outline-none transition-colors"
+            />
+            <span className="block text-[11px] text-slate-500 mt-1">
+              Optional. Used on customer-facing documents.
+            </span>
+          </label>
+
+          <label className="block">
+            <span className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1 font-semibold">
+              Phone
+            </span>
+            <input
+              type="tel"
+              value={phone}
+              onChange={(e) => setPhone(e.target.value)}
+              placeholder="(555) 555-5555"
+              className="w-full px-3 py-2 bg-page-50 border border-page-200 rounded text-sm
+                         focus:border-navy-500 focus:ring-2 focus:ring-navy-500/10 focus:bg-white
+                         focus:outline-none transition-colors"
+            />
+            <span className="block text-[11px] text-slate-500 mt-1">
+              Optional. Used on customer-facing documents.
+            </span>
+          </label>
+
           <label className="block">
             <span className="block text-[11px] uppercase tracking-wider text-slate-600 mb-1 font-semibold">
               New password

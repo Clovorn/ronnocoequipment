@@ -21,7 +21,7 @@ export function useAuth() {
     async function loadProfile(userId) {
       const { data, error } = await supabase
         .from('user_profiles')
-        .select('user_id, role, display_name, active, director_id')
+        .select('user_id, role, display_name, active, director_id, title, phone')
         .eq('user_id', userId)
         .maybeSingle();
       if (cancelled) return;

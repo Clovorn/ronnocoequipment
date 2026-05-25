@@ -123,7 +123,7 @@ export default function App() {
       )}
 
       {route.name === 'sell-sheet' && (
-        <SellSheetPage navigate={navigate} />
+        <SellSheetPage navigate={navigate} profile={profile} session={session} />
       )}
 
       {route.name === 'favorites' && (
