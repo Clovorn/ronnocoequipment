@@ -6,6 +6,7 @@ import Home from './components/Home.jsx';
 import CatalogBrowser from './components/CatalogBrowser.jsx';
 import BundlesBrowser from './components/BundlesBrowser.jsx';
 import BundlesGuidePage from './components/BundlesGuidePage.jsx';
+import BundleSellSheetPage from './components/BundleSellSheetPage.jsx';
 import VendorPage from './components/VendorPage.jsx';
 import VendorsDirectory from './components/VendorsDirectory.jsx';
 import AdminHome from './components/admin/AdminHome.jsx';
@@ -121,6 +122,14 @@ export default function App() {
         <BundlesBrowser canEdit={canEditCatalog} navigate={navigate} initialGuideOpen={true} guideOnly={true} />
       )}
 
+      {route.name === 'bundle-sell-sheet' && (
+        <BundleSellSheetPage
+          bundleId={route.params.bundleId}
+          navigate={navigate}
+          profile={profile}
+          session={session}
+        />
+      )}
 
       {route.name === 'favorites' && (
         <CatalogBrowser canEdit={canEditCatalog} role={role} userId={userId} favoritesOnly={true} />
