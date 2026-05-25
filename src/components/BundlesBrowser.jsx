@@ -75,7 +75,7 @@ export default function BundlesBrowser({ canEdit, navigate, initialGuideOpen = f
 
         <div className="flex flex-wrap gap-3 items-center mb-5">
           <button
-            onClick={() => setShowGuide(true)}
+            onClick={() => navigate ? navigate('bundles-guide') : setShowGuide(true)}
             className="px-4 py-2 rounded-full bg-navy-900 text-chalk-50 text-sm font-medium hover:bg-navy-800 transition-colors"
           >
             Open bundles guide
