@@ -33,6 +33,7 @@ function parseRoute(hash) {
     case 'catalog':    return { name: 'catalog',    params: {} };
     case 'bundles':    return { name: 'bundles',    params: {} };
     case 'bundles-guide': return { name: 'bundles-guide', params: {} };
+    case 'sell-sheet': return { name: 'sell-sheet', params: {} };
     case 'favorites':  return { name: 'favorites',  params: {} };
     // Deal sheet — optional ?draft=<uuid> hydrates an in-progress draft,
     // optional ?edit=<uuid> hydrates a previously-sent quote for re-sending,
@@ -67,6 +68,7 @@ export function routeToHash(name, params = {}) {
     case 'catalog':    return '#/catalog';
     case 'bundles':    return '#/bundles';
     case 'bundles-guide': return '#/bundles-guide';
+    case 'sell-sheet': return '#/sell-sheet';
     case 'favorites':  return '#/favorites';
     case 'deal':       {
       // edit > draft > bundle in priority (can't combine)
