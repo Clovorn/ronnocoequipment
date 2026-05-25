@@ -187,10 +187,19 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
   );
 }
 
+
+function FlatIcon({ label }) {
+  return (
+    <div className="w-11 h-11 rounded-2xl border border-page-200 bg-page-50 flex items-center justify-center text-lg shadow-sm">
+      <span aria-hidden="true">{label}</span>
+    </div>
+  );
+}
+
 function DecisionCard({ emoji, title, answer, text }) {
   return (
     <div className="rounded-2xl border border-page-200 bg-page-50 p-4">
-      <div className="text-3xl mb-3">{emoji}</div>
+      <div className="mb-3"><FlatIcon label={emoji} /></div>
       <h3 className="text-base font-medium text-slate-900 mb-2">{title}</h3>
       <div className="inline-block rounded-full bg-navy-900 text-chalk-50 text-xs font-semibold px-3 py-1 mb-3">
         {answer}
@@ -208,7 +217,7 @@ function PathCard({ emoji, title, subtitle, bullets, tone = 'emerald' }) {
 
   return (
     <div className={`rounded-3xl border p-5 md:p-6 ${tones[tone] || 'border-page-200 bg-white'}`}>
-      <div className="text-3xl mb-3">{emoji}</div>
+      <div className="mb-3"><FlatIcon label={emoji} /></div>
       <h2 className="text-2xl font-light text-slate-900">{title}</h2>
       <p className="text-sm text-slate-500 mb-4">{subtitle}</p>
       <ul className="space-y-2.5">
@@ -226,7 +235,7 @@ function PathCard({ emoji, title, subtitle, bullets, tone = 'emerald' }) {
 function VisualNote({ emoji, title, text }) {
   return (
     <div className="rounded-2xl border border-page-200 p-4 bg-white">
-      <div className="text-3xl mb-3">{emoji}</div>
+      <div className="mb-3"><FlatIcon label={emoji} /></div>
       <h3 className="text-base font-medium text-slate-900 mb-1">{title}</h3>
       <p className="text-sm text-slate-600 leading-relaxed">{text}</p>
     </div>
@@ -236,7 +245,7 @@ function VisualNote({ emoji, title, text }) {
 function ChecklistCard({ emoji, title, bullets }) {
   return (
     <div className="rounded-2xl border border-page-200 p-4 bg-white">
-      <div className="text-3xl mb-3">{emoji}</div>
+      <div className="mb-3"><FlatIcon label={emoji} /></div>
       <h3 className="text-base font-medium text-slate-900 mb-3">{title}</h3>
       <ul className="space-y-2">
         {bullets.map((bullet) => (
