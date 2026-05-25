@@ -35,7 +35,7 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
             subtitle="This is a bundle program deal"
             bullets={[
               'Customer is being sold into a real bundle program.',
-              'Program includes media and service.',
+              'Program includes digital media delivery, marketing, and service.',
               'This is the stronger sell when the customer is a fit.',
             ]}
             tone="emerald"
@@ -47,7 +47,7 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
             bullets={[
               'Customer may still buy through a distributor.',
               'But they are not in the Distributor Program or bundle program.',
-              'No included media and no included service from the program structure.',
+              'No included digital media delivery, marketing, or bundled service from the program structure.',
             ]}
             tone="slate"
           />
@@ -76,8 +76,8 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
           subtitle="Distributor Program or Ronnoco Branded bundle program"
           bullets={[
             'Customer is put into a real program.',
-            'Media is included.',
-            'Service is included.',
+            'Digital media delivery and marketing are included.',
+            'Service is included when the customer stays in compliance with the service agreement.',
             'That is the selling point.',
             'Best when you want a cleaner, more complete program story.',
           ]}
@@ -90,7 +90,7 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
           bullets={[
             'Customer can still buy equipment through a distributor.',
             'Built in the normal deal sheet.',
-            'No bundled program media.',
+            'No bundled program digital media or marketing.',
             'No bundled program service.',
             'Best when the customer wants equipment, but not the full program.',
           ]}
@@ -107,19 +107,19 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
         </h2>
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
           <VisualNote
-            emoji="🎨"
-            title="Media included"
-            text="The bundle program includes media. A general deal does not."
+            emoji="📺"
+            title="Digital media included"
+            text="Distributor Programs include Ronnoco digital media delivery and marketing, including delivery to customer-installed screens. A general deal does not."
           />
           <VisualNote
             emoji="🧰"
             title="Service included"
-            text="The bundle program includes service. A general deal does not."
+            text="Service is included when the customer is in compliance with the service agreement. A general deal does not include this bundled service structure."
           />
           <VisualNote
-            emoji="⭐"
-            title="Better full-program story"
-            text="You are not just selling equipment. You are selling a more complete, supported program."
+            emoji="💡"
+            title="Why push the program"
+            text="You are not just selling equipment. You are selling a supported lease program with digital media, marketing, and service built in."
           />
         </div>
       </section>
@@ -144,6 +144,27 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
           </div>
         </section>
       )}
+
+      <section className="mb-6 bg-blue-50 border border-blue-200 rounded-3xl p-5 md:p-6">
+        <p className="text-xs uppercase tracking-[0.18em] text-blue-800 mb-2 font-semibold">
+          Important extra rule
+        </p>
+        <h2 className="text-2xl font-light text-slate-900 mb-4">
+          Media outside Distributor Programs
+        </h2>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <VisualNote
+            emoji="🚚"
+            title="DSD customers"
+            text="For DSD customers or individual customers wanting media services, the customer must be a Ronnoco customer with enough volume to cover monthly media delivery."
+          />
+          <VisualNote
+            emoji="💵"
+            title="Monthly media cost"
+            text="Monthly digital media delivery typically costs about $30 to $70 per player, depending on setup."
+          />
+        </div>
+      </section>
 
       <section className="mb-6 bg-white border border-page-200 rounded-3xl p-5 md:p-6 shadow-sm">
         <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-2 font-medium">
