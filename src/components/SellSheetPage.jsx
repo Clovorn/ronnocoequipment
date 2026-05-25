@@ -17,10 +17,10 @@ export default function SellSheetPage({ navigate, profile, session }) {
                   Customer Sell Sheet
                 </p>
                 <h1 className="text-3xl md:text-4xl print:text-3xl font-light leading-tight mb-3">
-                  A complete beverage program designed to support your business
+                  A complete beverage program through your distributor
                 </h1>
                 <p className="text-sm md:text-base print:text-sm text-chalk-100/90 leading-relaxed max-w-3xl">
-                  Ronnoco programs combine equipment, service, and digital marketing support into one complete solution built to help create a stronger beverage experience for your customers.
+                  The Distributor Program gives your business access to new beverage equipment, ongoing service support, and digital media delivery through a professionally supported program, without forcing you to manage every piece separately.
                 </p>
               </div>
               <div className="flex-shrink-0 hidden sm:block print:block">
@@ -49,40 +49,28 @@ export default function SellSheetPage({ navigate, profile, session }) {
               <div className="space-y-5 print:space-y-4">
                 <section className="bg-white border border-page-200 rounded-3xl p-5 print:p-4">
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-2 font-medium">
-                    Program overview
+                    Why this program is a great option
                   </p>
                   <h2 className="text-2xl print:text-xl font-light text-slate-900 mb-3">
-                    What the program offers
+                    A simpler way to build a better beverage business
                   </h2>
-                  <p className="text-sm print:text-[12px] text-slate-700 leading-relaxed mb-4">
-                    This program is for customers who want more than equipment alone. It brings together beverage equipment, service, and marketing support in one coordinated solution.
+                  <p className="text-sm print:text-[12px] text-slate-700 leading-relaxed mb-3">
+                    Instead of making a large upfront equipment investment or trying to coordinate multiple vendors, customers can build a stronger beverage program through the distributor relationship they already use.
                   </p>
-
-                  <div className="space-y-3">
-                    <MiniCard
-                      title="Equipment"
-                      text="Selected to support the customer’s beverage offering and day-to-day operation."
-                    />
-                    <MiniCard
-                      title="Service"
-                      text="Included when the customer remains in compliance with the service agreement."
-                    />
-                    <MiniCard
-                      title="Marketing"
-                      text="Digital marketing support can help strengthen product visibility and customer engagement."
-                    />
-                  </div>
+                  <p className="text-sm print:text-[12px] text-slate-700 leading-relaxed">
+                    The program is designed to help locations look better, operate more consistently, and sell more beverage products through a complete, professionally supported solution.
+                  </p>
                 </section>
 
                 <section className="bg-accent-500/5 border border-accent-500/20 rounded-3xl p-5 print:p-4">
                   <p className="text-xs uppercase tracking-[0.18em] text-accent-700 mb-2 font-semibold">
-                    Service and support
+                    How the program works
                   </p>
                   <h2 className="text-2xl print:text-xl font-light text-slate-900 mb-3">
-                    How the program works
+                    A complete program, not separate pieces
                   </h2>
                   <p className="text-sm print:text-[12px] text-slate-700 leading-relaxed">
-                    Customers in the program receive equipment service and ongoing marketing support throughout the lease term when they remain in compliance with the Supply, Service & Marketing Agreement.
+                    New equipment helps improve reliability and presentation. Digital media helps promote beverage offerings directly at the point of sale. Service support helps keep the program running properly. Together, these pieces create a stronger customer experience and a more professional in-store beverage destination.
                   </p>
                 </section>
               </div>
@@ -90,37 +78,31 @@ export default function SellSheetPage({ navigate, profile, session }) {
               <div className="space-y-5 print:space-y-4">
                 <section className="bg-page-50 border border-page-200 rounded-3xl p-5 print:p-4">
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-2 font-medium">
-                    Why customers choose it
+                    What customers receive
                   </p>
                   <h2 className="text-2xl print:text-xl font-light text-slate-900 mb-3">
-                    A stronger overall solution
+                    Program benefits
                   </h2>
                   <ul className="space-y-2.5">
-                    <Bullet text="A more complete beverage program, not just a piece of equipment" />
-                    <Bullet text="One coordinated approach to equipment, service, and marketing" />
-                    <Bullet text="A stronger experience for both operators and end customers" />
-                    <Bullet text="Well suited for customers focused on growing beverage sales" />
+                    <Bullet text="New beverage equipment" />
+                    <Bullet text="Digital beverage media delivery" />
+                    <Bullet text="Service support while in compliance" />
+                    <Bullet text="A simple ordering path through the distributor" />
+                    <Bullet text="A more professional in-store beverage presentation" />
+                    <Bullet text="A scalable program for single or multi-location operators" />
+                    <Bullet text="A better way to grow beverage sales without overcomplicating the process" />
                   </ul>
                 </section>
 
                 <section className="bg-white border border-page-200 rounded-3xl p-5 print:p-4">
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-2 font-medium">
-                    Best fit
+                    Program compliance
                   </p>
                   <h2 className="text-2xl print:text-xl font-light text-slate-900 mb-3">
-                    Who this program is for
+                    Ongoing support stays connected to the program
                   </h2>
                   <p className="text-sm print:text-[12px] text-slate-700 leading-relaxed">
-                    This solution is ideal for customers who want a more complete beverage program and are looking for a structured way to support equipment performance, customer experience, and beverage growth.
-                  </p>
-                </section>
-
-                <section className="bg-white border border-page-200 rounded-3xl p-5 print:p-4">
-                  <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-2 font-medium">
-                    Next step
-                  </p>
-                  <p className="text-sm print:text-[12px] text-slate-700 leading-relaxed">
-                    Your Ronnoco sales representative can provide a quote tailored to your program, equipment needs, and business goals.
+                    As long as the location remains in compliance with the program agreement, including purchasing approved beverage products through the required distributor or program channel, the included benefits continue. Equipment, service, and media support are all tied to supporting the beverage program.
                   </p>
                 </section>
               </div>
@@ -133,7 +115,7 @@ export default function SellSheetPage({ navigate, profile, session }) {
                     Note from your sales representative
                   </p>
                   <p className="text-sm print:text-[12px] text-slate-700 leading-relaxed">
-                    Thank you for the opportunity to share this program with you. We would be glad to review your goals, recommend the right equipment package, and prepare a quote tailored to your location and business needs.
+                    Our goal is not just to place equipment in your location. Our goal is to help you build a beverage program that looks better, runs smoother, and sells more product. I would be glad to review your goals, recommend the right equipment package, and prepare a quote tailored to your business.
                   </p>
                 </div>
 
@@ -143,6 +125,9 @@ export default function SellSheetPage({ navigate, profile, session }) {
                   </p>
                   <div className="text-base print:text-sm font-medium text-slate-900">{repName}</div>
                   <div className="text-sm print:text-[12px] text-slate-600">{repTitle}</div>
+                  <div className="text-sm print:text-[12px] text-slate-700 mt-2 leading-relaxed">
+                    Contact me to review program options, discuss the right beverage setup for your location, and receive a quote tailored to your business goals.
+                  </div>
                   {repEmail && <div className="text-sm print:text-[12px] text-slate-700 mt-2">{repEmail}</div>}
                   {repPhone && <div className="text-sm print:text-[12px] text-slate-700">{repPhone}</div>}
                 </div>
@@ -151,15 +136,6 @@ export default function SellSheetPage({ navigate, profile, session }) {
           </div>
         </div>
       </div>
-    </div>
-  );
-}
-
-function MiniCard({ title, text }) {
-  return (
-    <div className="rounded-2xl border border-page-200 bg-page-50 p-4 print:p-3">
-      <h3 className="text-base print:text-sm font-medium text-slate-900 mb-1.5">{title}</h3>
-      <p className="text-sm print:text-[12px] text-slate-600 leading-relaxed">{text}</p>
     </div>
   );
 }
