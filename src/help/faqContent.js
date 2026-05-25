@@ -1,3 +1,5 @@
+import { BUNDLES_GUIDE_SECTIONS } from './bundlesGuideContent.js';
+
 /**
  * Ronnoco Deal Builder — Help & FAQ content.
  *
@@ -169,6 +171,35 @@ export const FAQ_SECTIONS = [
         'The customer wants to outright purchase or finance the equipment instead of leasing',
         'The total list price after additions changes the deal economics (bundles are priced as a program, not against list prices)',
       ]},
+    ],
+  },
+
+  // ────────────────────────────────────────────────────────────────────────
+  {
+    id: 'bundles-guide',
+    number: 3.5,
+    title: 'Bundles guide for reps',
+    starred: true,
+    summary: 'How Distributor Branded bundle deals differ from general sales and how reps should position and submit them.',
+    blocks: [
+      { type: 'p', text: 'This page explains the difference between Distributor Branded program bundles and general sale, finance, or lease deals. It also explains the math, sales positioning, submission flow, and rep responsibilities.' },
+      ...BUNDLES_GUIDE_SECTIONS.flatMap((section) => {
+        const blocks = [
+          { type: 'h3', text: section.title },
+        ];
+        if (section.intro) blocks.push({ type: 'p', text: section.intro });
+        if (section.cards) {
+          section.cards.forEach((card) => {
+            if (card.eyebrow) blocks.push({ type: 'p', text: `**${card.eyebrow}**` });
+            if (card.title) blocks.push({ type: 'p', text: card.title });
+            if (card.bullets?.length) blocks.push({ type: 'ul', items: card.bullets });
+          });
+        }
+        if (section.bullets?.length) blocks.push({ type: 'ul', items: section.bullets });
+        if (section.steps?.length) blocks.push({ type: 'ol', items: section.steps.map((s) => `**${s.title}** - ${s.body}`) });
+        if (section.note) blocks.push({ type: 'callout', tone: 'tip', text: section.note });
+        return blocks;
+      }),
     ],
   },
 
