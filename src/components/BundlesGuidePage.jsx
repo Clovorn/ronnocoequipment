@@ -125,7 +125,7 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
           <VisualNote
             emoji="💵"
             title="Media cost"
-            text="Monthly digital media delivery usually costs about $30 to $70 per player, depending on setup."
+            text="Monthly digital media delivery usually costs about $30 to $70 per player, depending on setup. That cost is billed to Ronnoco and must be passed through to the customer."
           />
         </div>
       </section>
