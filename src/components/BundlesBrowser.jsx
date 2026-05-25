@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
 import BundleDetailView from './BundleDetailView.jsx';
+import BundlesGuidePage from './BundlesGuidePage.jsx';
 
-export default function BundlesBrowser({ canEdit, navigate }) {
+export default function BundlesBrowser({ canEdit, navigate, initialGuideOpen = false, guideOnly = false }) {
   const [bundles, setBundles] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedBundle, setSelectedBundle] = useState(null);
   const [search, setSearch] = useState('');
+  const [showGuide, setShowGuide] = useState(initialGuideOpen);
 
   useEffect(() => {
     let cancelled = false;
@@ -33,6 +35,22 @@ export default function BundlesBrowser({ canEdit, navigate }) {
       )
     : bundles;
 
+  if (showGuide) {
+    return (
+      <BundlesGuidePage
+        bundles={bundles}
+        navigate={(name, params) => {
+          if (name === 'bundles') {
+            setShowGuide(false);
+            if (guideOnly && navigate) navigate('bundles');
+            return;
+          }
+          navigate?.(name, params);
+        }}
+      />
+    );
+  }
+
   return (
     <div className="px-4 md:px-6 lg:px-10 py-4 md:py-6">
       <div className="mb-4 md:mb-6">
@@ -54,6 +72,18 @@ export default function BundlesBrowser({ canEdit, navigate }) {
           base program and add equipment on top of the package, in addition to
           the base bundle cost.
         </p>
+
+        <div className="flex flex-wrap gap-3 items-center mb-5">
+          <button
+            onClick={() => setShowGuide(true)}
+            className="px-4 py-2 rounded-full bg-navy-900 text-chalk-50 text-sm font-medium hover:bg-navy-800 transition-colors"
+          >
+            Open bundles guide
+          </button>
+          <p className="text-sm text-slate-500">
+            Sales help for explaining bundle pricing, process, and positioning.
+          </p>
+        </div>
 
         <div className="relative max-w-md">
           <input
