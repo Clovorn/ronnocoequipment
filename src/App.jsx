@@ -118,7 +118,7 @@ export default function App() {
       )}
 
       {route.name === 'bundles-guide' && (
-        <BundlesBrowser canEdit={canEditCatalog} navigate={navigate} initialGuideOpen={true} guideOnly={true} />
+        <BundlesGuidePage navigate={navigate} />
       )}
 
 
