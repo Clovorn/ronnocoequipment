@@ -145,7 +145,7 @@ function QuoteDocument({ quote, dealBundle }) {
 
       <main className="max-w-4xl mx-auto px-4 md:px-8 py-8 md:py-12">
         {/* Quote header card */}
-        <div className="bg-white border border-page-200 rounded-[1.75rem] shadow-card overflow-hidden">
+        <div className="bg-white border border-page-200 rounded-lg shadow-card overflow-hidden">
           <div className="px-6 md:px-10 py-6 md:py-8 border-b border-page-200">
             <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
               <div>
@@ -155,11 +155,6 @@ function QuoteDocument({ quote, dealBundle }) {
                 <h1 className="text-2xl md:text-3xl font-light text-slate-900">
                   {dealTypeLabel}
                 </h1>
-                {isBundleDeal && (
-                  <p className="text-sm text-slate-600 mt-3 max-w-2xl leading-relaxed">
-                    A complete coffee program that combines equipment, service, and digital marketing into one monthly customer program.
-                  </p>
-                )}
                 {quote.store_name && (
                   <p className="text-sm text-slate-600 mt-2">
                     Prepared for <span className="font-medium text-slate-900">{quote.store_name}</span>
@@ -241,52 +236,40 @@ function QuoteDocument({ quote, dealBundle }) {
           {/* Customer-facing bundle program sheet inside the quote */}
           {isBundleDeal && (
             <>
-              <div className="px-6 md:px-10 py-8 border-b border-page-200 bg-gradient-to-br from-accent-500/10 via-white to-navy-50">
-                <div className="grid grid-cols-1 lg:grid-cols-[1.15fr_0.85fr] gap-6 items-start">
-                  <div>
-                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-2 font-medium">Program overview</p>
-                    <h3 className="text-2xl font-light text-slate-900 mb-3">What this bundle program gives your business</h3>
-                    <p className="text-sm text-slate-700 leading-relaxed mb-4">
-                      This quote is more than an equipment package. It is a bundled customer program designed to support beverage sales with equipment, service, and digital marketing working together.
-                    </p>
-                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                      <ProgramInfoCard
-                        title="Equipment"
-                        body="The equipment listed in this quote is the foundation of the program."
-                      />
-                      <ProgramInfoCard
-                        title="Service"
-                        body="Service is included while the customer remains in compliance with the Supply, Service & Marketing Agreement."
-                      />
-                      <ProgramInfoCard
-                        title="Digital marketing"
-                        body="Ronnoco digital media and marketing can include delivery to customer-installed screens."
-                      />
-                    </div>
-                  </div>
-                  <div className="rounded-3xl border border-page-200 bg-white p-5">
-                    <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-2 font-medium">Why customers choose this</p>
-                    <ul className="space-y-2.5">
-                      <li className="text-sm text-slate-700 flex gap-2"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" /><span>One monthly payment for the program</span></li>
-                      <li className="text-sm text-slate-700 flex gap-2"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" /><span>Service and marketing are built into the overall program structure</span></li>
-                      <li className="text-sm text-slate-700 flex gap-2"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" /><span>Strong fit for customers in compliance and producing $500 or more per month in coffee sales</span></li>
-                    </ul>
-                  </div>
+              <div className="px-6 md:px-10 py-6 border-b border-page-200 bg-accent-500/5">
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                  <ProgramInfoCard
+                    title="What is included"
+                    body="Your program bundles equipment, digital media delivery, marketing support, and service into one structured lease program."
+                  />
+                  <ProgramInfoCard
+                    title="How service works"
+                    body="Equipment service is included while the customer remains in compliance with the Supply, Service & Marketing Agreement with Ronnoco."
+                  />
+                  <ProgramInfoCard
+                    title="How marketing works"
+                    body="Ronnoco digital media and marketing support can include delivery to customer-installed screens as part of the program."
+                  />
                 </div>
               </div>
 
               <div className="px-6 md:px-10 py-6 border-b border-page-200 bg-white">
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <div className="rounded-3xl border border-page-200 bg-page-50 p-5">
-                    <h3 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2 font-semibold">How service and marketing work</h3>
-                    <p className="text-sm text-slate-700 leading-relaxed">
-                      The program includes equipment service plus Ronnoco digital media delivery and marketing support for the term of the lease, provided the customer remains in compliance with the service agreement.
+                  <div>
+                    <h3 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2 font-semibold">Why customers choose this program</h3>
+                    <p className="text-sm text-slate-700 leading-relaxed mb-3">
+                      This program is built to give the customer more than equipment alone. It combines support, service, and digital marketing into one monthly program structure.
                     </p>
+                    <ul className="space-y-2">
+                      <li className="text-sm text-slate-700 flex gap-2"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" /><span>One monthly payment for the program</span></li>
+                      <li className="text-sm text-slate-700 flex gap-2"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" /><span>Equipment, service, and marketing work together</span></li>
+                      <li className="text-sm text-slate-700 flex gap-2"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" /><span>Best value for customers in compliance and producing $500 or more per month in coffee sales</span></li>
+                    </ul>
                   </div>
                   <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5">
-                    <h3 className="text-[11px] uppercase tracking-wider text-amber-800 mb-2 font-semibold">Important program note</h3>
+                    <h3 className="text-[11px] uppercase tracking-wider text-amber-800 mb-2 font-semibold">Program note</h3>
                     <p className="text-sm text-slate-700 leading-relaxed">
-                      For customers outside Distributor Programs who want media services, monthly digital media delivery typically ranges from $30 to $70 per player and must be passed through to the customer.
+                      Service and media are included when the customer is in compliance with the service agreement. For customers outside Distributor Programs who want media services, monthly digital media delivery typically ranges from $30 to $70 per player and must be passed through to the customer.
                     </p>
                   </div>
                 </div>
