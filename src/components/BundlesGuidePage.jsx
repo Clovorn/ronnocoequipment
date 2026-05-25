@@ -95,16 +95,22 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
             emoji="📺"
             title="Digital media included"
             text="Distributor Programs include Ronnoco digital media delivery and marketing, including delivery to customer-installed screens."
+            linkLabel="Learn more in FAQ"
+            onClick={() => navigate?.('faq', { anchor: 'understanding-bundles' })}
           />
           <VisualNote
             emoji="🧰"
             title="Service included"
             text="Service is included when the customer is in compliance with the service agreement."
+            linkLabel="Service and program details"
+            onClick={() => navigate?.('faq', { anchor: 'understanding-bundles' })}
           />
           <VisualNote
             emoji="⭐"
             title="Better overall story"
             text="You are not just selling equipment. You are selling a more complete supported lease program."
+            linkLabel="Deal type FAQ"
+            onClick={() => navigate?.('faq', { anchor: 'deal-types-explained' })}
           />
         </div>
       </section>
@@ -121,11 +127,15 @@ export default function BundlesGuidePage({ bundles = [], navigate }) {
             emoji="🚚"
             title="DSD media rule"
             text="For DSD customers or individual customers wanting media services, the customer must be a Ronnoco customer with enough volume to cover monthly media delivery."
+            linkLabel="See deal sheet help"
+            onClick={() => navigate?.('faq', { anchor: 'building-a-deal-sheet' })}
           />
           <VisualNote
             emoji="💵"
             title="Media cost"
             text="Monthly digital media delivery usually costs about $30 to $70 per player, depending on setup. That cost is billed to Ronnoco and must be passed through to the customer."
+            linkLabel="Lease math and pricing FAQ"
+            onClick={() => navigate?.('faq', { anchor: 'lease-math' })}
           />
         </div>
       </section>
@@ -205,6 +215,14 @@ function DecisionCard({ emoji, title, answer, text }) {
         {answer}
       </div>
       <p className="text-sm text-slate-600 leading-relaxed">{text}</p>
+      {linkLabel && onClick && (
+        <button
+          onClick={onClick}
+          className="mt-3 text-sm font-medium text-navy-700 hover:text-navy-900 underline decoration-navy-300 hover:decoration-navy-700"
+        >
+          {linkLabel} →
+        </button>
+      )}
     </div>
   );
 }
@@ -232,12 +250,20 @@ function PathCard({ emoji, title, subtitle, bullets, tone = 'emerald' }) {
   );
 }
 
-function VisualNote({ emoji, title, text }) {
+function VisualNote({ emoji, title, text, linkLabel, onClick }) {
   return (
     <div className="rounded-2xl border border-page-200 p-4 bg-white">
       <div className="mb-3"><FlatIcon label={emoji} /></div>
       <h3 className="text-base font-medium text-slate-900 mb-1">{title}</h3>
       <p className="text-sm text-slate-600 leading-relaxed">{text}</p>
+      {linkLabel && onClick && (
+        <button
+          onClick={onClick}
+          className="mt-3 text-sm font-medium text-navy-700 hover:text-navy-900 underline decoration-navy-300 hover:decoration-navy-700"
+        >
+          {linkLabel} →
+        </button>
+      )}
     </div>
   );
 }
