@@ -233,48 +233,21 @@ function QuoteDocument({ quote, dealBundle }) {
             )}
           </div>
 
-          {/* Customer-facing bundle program sheet inside the quote */}
+          {/* Program inclusion callout (bundle deals only) — v28 wording:
+              digital media, program-branded marketing, equipment service;
+              conditional on compliance with the SSM Agreement. */}
           {isBundleDeal && (
-            <>
-              <div className="px-6 md:px-10 py-6 border-b border-page-200 bg-accent-500/5">
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
-                  <ProgramInfoCard
-                    title="What is included"
-                    body="Your program bundles equipment, digital media delivery, marketing support, and service into one structured lease program."
-                  />
-                  <ProgramInfoCard
-                    title="How service works"
-                    body="Equipment service is included while the customer remains in compliance with the Supply, Service & Marketing Agreement with Ronnoco."
-                  />
-                  <ProgramInfoCard
-                    title="How marketing works"
-                    body="Ronnoco digital media and marketing support can include delivery to customer-installed screens as part of the program."
-                  />
-                </div>
-              </div>
-
-              <div className="px-6 md:px-10 py-6 border-b border-page-200 bg-white">
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                  <div>
-                    <h3 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2 font-semibold">Why customers choose this program</h3>
-                    <p className="text-sm text-slate-700 leading-relaxed mb-3">
-                      This program is built to give the customer more than equipment alone. It combines support, service, and digital marketing into one monthly program structure.
-                    </p>
-                    <ul className="space-y-2">
-                      <li className="text-sm text-slate-700 flex gap-2"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" /><span>One monthly payment for the program</span></li>
-                      <li className="text-sm text-slate-700 flex gap-2"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" /><span>Equipment, service, and marketing work together</span></li>
-                      <li className="text-sm text-slate-700 flex gap-2"><span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" /><span>Best value for customers in compliance and producing $500 or more per month in coffee sales</span></li>
-                    </ul>
-                  </div>
-                  <div className="rounded-3xl border border-amber-200 bg-amber-50 p-5">
-                    <h3 className="text-[11px] uppercase tracking-wider text-amber-800 mb-2 font-semibold">Program note</h3>
-                    <p className="text-sm text-slate-700 leading-relaxed">
-                      Service and media are included when the customer is in compliance with the service agreement. For customers outside Distributor Programs who want media services, monthly digital media delivery typically ranges from $30 to $70 per player and must be passed through to the customer.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </>
+            <div className="px-6 md:px-10 py-6 border-b border-page-200 bg-accent-500/5">
+              <h3 className="text-[11px] uppercase tracking-wider text-accent-700 mb-2 font-semibold">
+                Included with your {dealBundle.bundle_name || 'Program'}
+              </h3>
+              <p className="text-sm text-slate-700 leading-relaxed">
+                You'll receive <span className="font-medium">program-branded marketing</span>,
+                {' '}<span className="font-medium">digital media</span>, and
+                {' '}<span className="font-medium">equipment service</span> for the duration of the lease —
+                {' '}when in compliance with your <span className="font-medium">Supply, Service &amp; Marketing Agreement</span> with Ronnoco.
+              </p>
+            </div>
           )}
 
           {/* Pricing summary */}
@@ -368,14 +341,4 @@ function QuoteDocument({ quote, dealBundle }) {
 
 function formatUSD(n) {
   return `$${(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-}
-
-
-function ProgramInfoCard({ title, body }) {
-  return (
-    <div className="rounded-2xl border border-page-200 bg-white p-4">
-      <h3 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2 font-semibold">{title}</h3>
-      <p className="text-sm text-slate-700 leading-relaxed">{body}</p>
-    </div>
-  );
 }
