@@ -105,6 +105,7 @@ function QuoteDocument({ quote, dealBundle }) {
   const customerName = quote.contact_name
     || [quote.first_name, quote.last_name].filter(Boolean).join(' ')
     || null;
+  const customerPhone = quote.contact_cell || quote.phone || null;
   const validUntilStr = quote.quote_valid_until
     ? new Date(quote.quote_valid_until + 'T00:00:00').toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
     : null;
@@ -190,14 +191,24 @@ function QuoteDocument({ quote, dealBundle }) {
           )}
 
           {/* Customer info */}
-          {(quote.address || quote.city || quote.state) && (
+          {(quote.address || quote.city || quote.state || customerName || customerPhone || quote.contact_email) && (
             <div className="px-6 md:px-10 py-5 border-b border-page-200">
-              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-1 font-semibold">Customer Location</p>
-              <p className="text-sm text-slate-700 leading-relaxed">
-                {quote.store_name && <>{quote.store_name}<br /></>}
-                {quote.address && <>{quote.address}<br /></>}
-                {[quote.city, quote.state, quote.zip_code].filter(Boolean).join(', ')}
-              </p>
+              <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-3 font-semibold">Customer Information</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm text-slate-700">
+                <div className="space-y-1 leading-relaxed">
+                  {quote.store_name && <p><span className="font-medium text-slate-900">Store:</span> {quote.store_name}</p>}
+                  {customerName && <p><span className="font-medium text-slate-900">Customer:</span> {customerName}</p>}
+                  {customerPhone && <p><span className="font-medium text-slate-900">Customer Phone:</span> {customerPhone}</p>}
+                  {quote.contact_email && <p><span className="font-medium text-slate-900">Customer Email:</span> {quote.contact_email}</p>}
+                </div>
+                {(quote.address || quote.city || quote.state || quote.zip_code) && (
+                  <div className="space-y-1 leading-relaxed">
+                    <p className="font-medium text-slate-900">Location</p>
+                    {quote.address && <p>{quote.address}</p>}
+                    <p>{[quote.city, quote.state, quote.zip_code].filter(Boolean).join(', ')}</p>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
