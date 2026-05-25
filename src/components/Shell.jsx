@@ -18,7 +18,7 @@ const TABS = [
  * function. Vendor / vendors / profile pages bucket under 'home' for highlight purposes.
  */
 export default function Shell({ profile, session, routeName, navigate, children }) {
-  const role = profile?.role || 'sales';
+  const role = profile?.role || null;
   // isAdmin here is true for managers (director + admin) — used to show the
   // Admin menu entry. Kept under this name for backward-compat with the
   // existing UserMenu prop API; the value covers all "elevated" roles.

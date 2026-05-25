@@ -54,7 +54,7 @@ export default function App() {
 
   if (!session) return <LoginScreen />;
 
-  const role = profile?.role || 'sales';
+  const role = profile?.role || null;
 
   // Permission split (v23):
   //   canEditCatalog — write access to equipment, bundles, vendors, etc.
