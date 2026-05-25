@@ -58,8 +58,8 @@ function DisplayInfoCard({ profile, session, onUpdated }) {
   const [error, setError] = useState(null);
   const [savedAt, setSavedAt] = useState(null);
 
-  const role = profile?.role || 'sales';
-  const roleLabel = { admin: 'Admin', director: 'Director', sales: 'Sales', customer: 'Customer' }[role];
+  const role = profile?.role || null;
+  const roleLabel = role ? ({ admin: 'Admin', director: 'Director', sales: 'Sales', customer: 'Customer' }[role] || role) : 'Loading…';
   const isDirty =
     name.trim() !== (profile?.display_name || '') ||
     title.trim() !== (profile?.title || '') ||

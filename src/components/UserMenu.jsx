@@ -16,8 +16,8 @@ import { signOut } from '../lib/useAuth.js';
 export default function UserMenu({ profile, session, navigate, isAdmin }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef(null);
-  const role = profile?.role || 'sales';
-  const roleLabel = { admin: 'Admin', director: 'Director', sales: 'Sales', customer: 'Customer' }[role];
+  const role = profile?.role || null;
+  const roleLabel = role ? ({ admin: 'Admin', director: 'Director', sales: 'Sales', customer: 'Customer' }[role] || role) : 'Loading…';
   const displayName = profile?.display_name || session.user.email;
   const initials = getInitials(profile?.display_name, session.user.email);
 
