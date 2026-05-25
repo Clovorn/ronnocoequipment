@@ -45,7 +45,7 @@ export default function SellSheetPage({ navigate, profile, session }) {
           </div>
 
           <div className="p-5 md:p-6 print:p-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5 print:gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 print:grid-cols-2 gap-5 print:gap-4">
               <div className="space-y-5 print:space-y-4">
                 <section className="bg-white border border-page-200 rounded-3xl p-5 print:p-4">
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-2 font-medium">
@@ -127,7 +127,7 @@ export default function SellSheetPage({ navigate, profile, session }) {
             </div>
 
             <section className="mt-5 print:mt-4 border-t border-page-200 pt-4 bg-navy-50/70 rounded-3xl px-5 pb-5 print:px-4 print:pb-4">
-              <div className="grid grid-cols-1 md:grid-cols-[1.1fr_0.9fr] gap-4 items-start">
+              <div className="grid grid-cols-1 md:grid-cols-[1.1fr_0.9fr] print:grid-cols-2 gap-4 items-start">
                 <div>
                   <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-2 font-medium">
                     Note from your sales representative
