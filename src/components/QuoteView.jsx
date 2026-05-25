@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchQuoteForCustomer, recordQuoteView, fetchDealBundle } from '../lib/dealPipeline.js';
 import RonnocoLogo from './RonnocoLogo.jsx';
+import { DISTRIBUTOR_PROGRAM_BENEFITS, DISTRIBUTOR_PROGRAM_COMPLIANCE, DISTRIBUTOR_PROGRAM_REP_CLOSING, DISTRIBUTOR_PROGRAM_CUSTOMER_SUMMARY } from '../help/distributorProgramMessaging.js';
 
 /**
  * QuoteView — public, customer-facing page for a single quote.
@@ -161,6 +162,15 @@ function QuoteDocument({ quote, dealBundle }) {
                     {customerName && <> · Attn: <span className="font-medium text-slate-900">{customerName}</span></>}
                   </p>
                 )}
+                {isBundleDeal ? (
+                  <p className="text-sm text-slate-600 mt-3 max-w-2xl leading-relaxed">
+                    {DISTRIBUTOR_PROGRAM_CUSTOMER_SUMMARY}
+                  </p>
+                ) : (
+                  <p className="text-sm text-slate-600 mt-3 max-w-2xl leading-relaxed">
+                    This quote is built around the equipment, pricing, and structure selected for your business needs.
+                  </p>
+                )}
               </div>
               <div className="text-right">
                 <p className="text-[11px] uppercase tracking-wider text-slate-500 mb-0.5">Quote Number</p>
@@ -238,15 +248,30 @@ function QuoteDocument({ quote, dealBundle }) {
               conditional on compliance with the SSM Agreement. */}
           {isBundleDeal && (
             <div className="px-6 md:px-10 py-6 border-b border-page-200 bg-accent-500/5">
-              <h3 className="text-[11px] uppercase tracking-wider text-accent-700 mb-2 font-semibold">
-                Included with your {dealBundle.bundle_name || 'Program'}
-              </h3>
-              <p className="text-sm text-slate-700 leading-relaxed">
-                You'll receive <span className="font-medium">program-branded marketing</span>,
-                {' '}<span className="font-medium">digital media</span>, and
-                {' '}<span className="font-medium">equipment service</span> for the duration of the lease —
-                {' '}when in compliance with your <span className="font-medium">Supply, Service &amp; Marketing Agreement</span> with Ronnoco.
-              </p>
+              <div className="grid grid-cols-1 lg:grid-cols-[1.05fr_0.95fr] gap-6">
+                <div>
+                  <h3 className="text-[11px] uppercase tracking-wider text-accent-700 mb-2 font-semibold">
+                    Included with your {dealBundle.bundle_name || 'Program'}
+                  </h3>
+                  <p className="text-sm text-slate-700 leading-relaxed mb-3">
+                    This is not just an equipment quote. It is a complete beverage growth program that gives the customer access to new equipment, digital marketing support, and service when they stay compliant with the program agreement.
+                  </p>
+                  <ul className="space-y-2">
+                    {DISTRIBUTOR_PROGRAM_BENEFITS.slice(0, 5).map((item) => (
+                      <li key={item} className="text-sm text-slate-700 leading-relaxed flex gap-2">
+                        <span className="mt-1.5 w-1.5 h-1.5 rounded-full bg-accent-600 flex-shrink-0" />
+                        <span>{item}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                <div className="bg-white border border-page-200 rounded-2xl p-4">
+                  <h3 className="text-[11px] uppercase tracking-wider text-slate-500 mb-2 font-semibold">Program compliance</h3>
+                  <p className="text-sm text-slate-700 leading-relaxed">
+                    {DISTRIBUTOR_PROGRAM_COMPLIANCE}
+                  </p>
+                </div>
+              </div>
             </div>
           )}
 
@@ -317,8 +342,9 @@ function QuoteDocument({ quote, dealBundle }) {
               )}
             </p>
             <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-              Questions about this quote, want to change something, or ready to move forward? Reply to the email this quote came in,
-              or contact your rep directly.
+              {isBundleDeal
+                ? `${DISTRIBUTOR_PROGRAM_REP_CLOSING} Reply to the email this quote came in, or contact your rep directly to review program options and next steps.`
+                : 'Questions about this quote, want to change something, or ready to move forward? Reply to the email this quote came in, or contact your rep directly.'}
             </p>
           </div>
         )}
