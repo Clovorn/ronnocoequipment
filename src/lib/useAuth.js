@@ -19,11 +19,19 @@ export function useAuth() {
     let cancelled = false;
 
     async function loadProfile(userId) {
-      const { data, error } = await supabase
+      let { data, error } = await supabase
         .from('user_profiles')
         .select('user_id, role, display_name, active, director_id, title, phone')
         .eq('user_id', userId)
         .maybeSingle();
+
+      if (error && /title|phone/i.test(error.message || '')) {
+        ({ data, error } = await supabase
+          .from('user_profiles')
+          .select('user_id, role, display_name, active, director_id')
+          .eq('user_id', userId)
+          .maybeSingle());
+      }
       if (cancelled) return;
       if (error) {
         console.error('Failed to load profile:', error);
