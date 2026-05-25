@@ -131,6 +131,7 @@ export default function BundlesBrowser({ canEdit, navigate, initialGuideOpen = f
                   bundle={bundle}
                   onClick={() => setSelectedBundle(bundle)}
                   onStartDeal={() => navigate && navigate('deal', { bundleId: bundle.id })}
+                  onOpenSellSheet={() => navigate && navigate('bundle-sell-sheet', { bundleId: bundle.id })}
                 />
               ))}
             </div>
@@ -153,7 +154,7 @@ export default function BundlesBrowser({ canEdit, navigate, initialGuideOpen = f
   );
 }
 
-function BundleCard({ bundle, onClick, onStartDeal }) {
+function BundleCard({ bundle, onClick, onStartDeal, onOpenSellSheet }) {
   // v27: bundles now use the computed pricing model. Show only the marketed
   // "starts at" monthly fee from target_monthly_fee. No cash price.
   // Falls back to legacy monthly_lease_price for any bundles that haven't
@@ -224,12 +225,19 @@ function BundleCard({ bundle, onClick, onStartDeal }) {
           )}
         </div>
 
-        <button
-          onClick={(e) => { e.stopPropagation(); onStartDeal?.(); }}
-          className="w-full px-3 py-2 bg-navy-900 text-chalk-50 text-sm font-medium rounded
-                     hover:bg-navy-800 transition-colors">
-          Start deal from this bundle →
-        </button>
+        <div className="grid grid-cols-1 gap-2">
+          <button
+            onClick={(e) => { e.stopPropagation(); onOpenSellSheet?.(); }}
+            className="w-full px-3 py-2 border border-page-200 bg-white text-slate-700 text-sm font-medium rounded hover:bg-page-50 transition-colors">
+            Open customer sell sheet
+          </button>
+          <button
+            onClick={(e) => { e.stopPropagation(); onStartDeal?.(); }}
+            className="w-full px-3 py-2 bg-navy-900 text-chalk-50 text-sm font-medium rounded
+                       hover:bg-navy-800 transition-colors">
+            Start deal from this bundle →
+          </button>
+        </div>
       </div>
     </article>
   );
