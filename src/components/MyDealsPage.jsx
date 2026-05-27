@@ -356,44 +356,176 @@ export default function MyDealsPage({ profile, session, navigate }) {
     return true;
   });
 
+  // Derived counts for the tab badges
+  const leadsCount       = leads.length;
+  const draftsCount      = drafts.length;
+  const submissionsCount = submissions.length;
+  const needsAction      = submissions.filter((r) =>
+    r.is_quote && r.customer_decision === 'pending'
+  ).length;
+
+  // Default tab: leads if the rep has any, otherwise submissions
+  const [activeTab, setActiveTab] = useState(() =>
+    leadsCount > 0 ? 'leads' : 'submissions'
+  );
+
+  function handleLeadUpdated(leadId, patch) {
+    setLeads((prev) => prev.map((l) => l.id === leadId ? { ...l, ...patch } : l));
+    if (patch.status && patch.status !== 'active') {
+      setLeads((prev) => prev.filter((l) => l.id !== leadId));
+    }
+  }
+
+  const TABS = [
+    {
+      id: 'leads',
+      label: 'My Leads',
+      count: leadsCount,
+      dot: leadsCount > 0,
+      dotColor: 'bg-emerald-500',
+      show: true,
+    },
+    {
+      id: 'drafts',
+      label: 'Drafts',
+      count: draftsCount,
+      dot: false,
+      show: true,
+    },
+    {
+      id: 'submissions',
+      label: 'Quotes & Deals',
+      count: submissionsCount,
+      dot: needsAction > 0,
+      dotColor: 'bg-amber-500',
+      show: true,
+    },
+  ];
+
   return (
     <div className="px-4 md:px-6 lg:px-10 py-4 md:py-6 max-w-5xl">
-      <div className="mb-5 md:mb-6">
-        <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">
-          Workspace
-        </p>
-        <h1 className="text-2xl md:text-3xl font-light text-slate-900">My deals</h1>
-        <p className="text-sm text-slate-600 mt-1 max-w-2xl">
-          Your in-progress drafts and your submitted quotes and deals — all in one place.
-        </p>
+
+      {/* ─── Page header ─── */}
+      <div className="mb-4 flex flex-col sm:flex-row sm:items-end sm:justify-between gap-3">
+        <div>
+          <p className="text-xs uppercase tracking-[0.18em] text-slate-500 mb-1 font-medium">Workspace</p>
+          <h1 className="text-2xl md:text-3xl font-light text-slate-900">My workspace</h1>
+        </div>
+        <button
+          onClick={() => navigate('deal')}
+          className="self-start sm:self-auto px-4 py-2 bg-navy-900 text-chalk-50 text-sm
+                     font-medium rounded hover:bg-navy-800 transition-colors whitespace-nowrap"
+        >
+          + New deal
+        </button>
       </div>
 
-      {/* ─── My Leads (from Distributor Leads portal) ─── */}
-      <MyLeadsSection
-        leads={leads}
-        loading={leadsLoading}
-        error={leadsError}
-        search={leadsSearch}
-        onSearchChange={setLeadsSearch}
-        stageFilter={leadsStageFilter}
-        onStageFilterChange={setLeadsStageFilter}
-        expandedLeadId={expandedLeadId}
-        onToggleExpand={(id) => setExpandedLeadId((prev) => (prev === id ? null : id))}
-        onConvert={(lead) => { setConvertError(null); setConvertTarget(lead); }}
-        onLeadUpdated={(leadId, patch) => {
-          // Patch the in-memory lead so the card re-renders immediately
-          // without waiting for a full refetch.
-          setLeads((prev) => prev.map((l) =>
-            l.id === leadId ? { ...l, ...patch } : l
-          ));
-          // If the lead is now lost or converted, remove it from the list
-          if (patch.status && patch.status !== 'active') {
-            setLeads((prev) => prev.filter((l) => l.id !== leadId));
-          }
-        }}
-      />
+      {/* ─── Summary stat cards ─── */}
+      <div className="grid grid-cols-3 gap-3 mb-5">
+        <StatCard
+          label="Active leads"
+          value={leadsLoading ? '—' : leadsCount}
+          sub={leadsLoading ? '' : leadsCount === 0 ? 'None assigned' : 'Needs action'}
+          color="emerald"
+          onClick={() => setActiveTab('leads')}
+          active={activeTab === 'leads'}
+        />
+        <StatCard
+          label="Drafts"
+          value={draftsLoading ? '—' : draftsCount}
+          sub={draftsLoading ? '' : draftsCount === 0 ? 'None saved' : 'In progress'}
+          color="slate"
+          onClick={() => setActiveTab('drafts')}
+          active={activeTab === 'drafts'}
+        />
+        <StatCard
+          label="Submitted"
+          value={submissionsLoading ? '—' : submissionsCount}
+          sub={needsAction > 0 ? `${needsAction} awaiting decision` : 'Quotes & deals'}
+          color={needsAction > 0 ? 'amber' : 'slate'}
+          onClick={() => setActiveTab('submissions')}
+          active={activeTab === 'submissions'}
+        />
+      </div>
 
-      {/* Convert-to-deal confirmation modal */}
+      {/* ─── Tab bar ─── */}
+      <div className="flex border-b border-page-200 mb-4 gap-0">
+        {TABS.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium
+                        border-b-2 transition-colors whitespace-nowrap ${
+              activeTab === tab.id
+                ? 'border-navy-900 text-navy-900'
+                : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+            }`}
+          >
+            {tab.label}
+            {tab.count > 0 && (
+              <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${
+                activeTab === tab.id
+                  ? 'bg-navy-100 text-navy-800'
+                  : 'bg-page-100 text-slate-500'
+              }`}>
+                {tab.count}
+              </span>
+            )}
+            {tab.dot && (
+              <span className={`w-1.5 h-1.5 rounded-full ${tab.dotColor}`} />
+            )}
+          </button>
+        ))}
+      </div>
+
+      {/* ─── Tab panels ─── */}
+
+      {activeTab === 'leads' && (
+        <MyLeadsSection
+          leads={leads}
+          loading={leadsLoading}
+          error={leadsError}
+          search={leadsSearch}
+          onSearchChange={setLeadsSearch}
+          stageFilter={leadsStageFilter}
+          onStageFilterChange={setLeadsStageFilter}
+          expandedLeadId={expandedLeadId}
+          onToggleExpand={(id) => setExpandedLeadId((prev) => (prev === id ? null : id))}
+          onConvert={(lead) => { setConvertError(null); setConvertTarget(lead); }}
+          onLeadUpdated={handleLeadUpdated}
+        />
+      )}
+
+      {activeTab === 'drafts' && (
+        <DraftsSection
+          drafts={drafts}
+          loading={draftsLoading}
+          error={draftsError}
+          onResume={handleResume}
+          onDelete={handleDelete}
+          onRename={handleRename}
+          onStartNew={() => navigate('deal')}
+        />
+      )}
+
+      {activeTab === 'submissions' && (
+        <SubmissionsSection
+          rows={filteredSubmissions}
+          totalCount={submissions.length}
+          loading={submissionsLoading}
+          error={submissionsError}
+          filter={submissionsFilter}
+          onFilterChange={setSubmissionsFilter}
+          configured={isDealPipelineConfigured}
+          expandedId={expandedId}
+          onToggleExpand={handleToggleExpand}
+          onEditQuote={handleEditQuote}
+          onDecision={handleDecision}
+          onResubmit={openResubmitModal}
+        />
+      )}
+
+      {/* Modals — always rendered at page level so overlays aren't clipped */}
       {convertTarget && (
         <ConvertLeadModal
           lead={convertTarget}
@@ -403,36 +535,6 @@ export default function MyDealsPage({ profile, session, navigate }) {
           onConfirm={() => handleConvertLead(convertTarget)}
         />
       )}
-
-      {/* ─── Drafts ─── */}
-      <DraftsSection
-        drafts={drafts}
-        loading={draftsLoading}
-        error={draftsError}
-        onResume={handleResume}
-        onDelete={handleDelete}
-        onRename={handleRename}
-        onStartNew={() => navigate('deal')}
-      />
-
-      {/* ─── Submissions ─── */}
-      <SubmissionsSection
-        rows={filteredSubmissions}
-        totalCount={submissions.length}
-        loading={submissionsLoading}
-        error={submissionsError}
-        filter={submissionsFilter}
-        onFilterChange={setSubmissionsFilter}
-        configured={isDealPipelineConfigured}
-        expandedId={expandedId}
-        onToggleExpand={handleToggleExpand}
-        onEditQuote={handleEditQuote}
-        onDecision={handleDecision}
-        onResubmit={openResubmitModal}
-      />
-
-      {/* v31 resubmit modal — rendered at the page level (not inside the row)
-          so its fixed-position overlay doesn't get clipped by row scroll. */}
       {resubmitTarget && (
         <ResubmitModal
           row={resubmitTarget}
@@ -495,20 +597,16 @@ function MyLeadsSection({
   // (not loading, no error). Empty-state is shown only when section is visible.
   if (!loading && !error && leads.length === 0) {
     return (
-      <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
-        <LeadsSectionHeader totalActive={0} />
-        <div className="p-6 text-center">
-          <p className="text-sm text-slate-500">
-            No new leads right now. Your director will route leads to you here.
-          </p>
-        </div>
-      </section>
+      <div className="p-6 text-center bg-white border border-page-200 rounded-lg">
+        <p className="text-sm text-slate-500">
+          No new leads right now. Your director will route leads to you here.
+        </p>
+      </div>
     );
   }
 
   return (
     <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
-      <LeadsSectionHeader totalActive={leads.length} loading={loading} />
 
       <div className="p-4 md:p-5">
         {loading ? (
@@ -1049,24 +1147,22 @@ function ConvertLeadModal({ lead, converting, error, onCancel, onConfirm }) {
 function DraftsSection({ drafts, loading, error, onResume, onDelete, onRename, onStartNew }) {
   return (
     <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
-      <header className="bg-navy-900 text-chalk-50 px-4 md:px-5 py-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm md:text-base font-medium">
-          Drafts
+      <div className="px-4 md:px-5 py-3 flex items-center justify-between gap-3
+                      border-b border-page-200 bg-page-50">
+        <p className="text-sm font-medium text-slate-700">
+          Saved drafts
           {!loading && drafts.length > 0 && (
-            <span className="ml-2 text-xs font-normal text-chalk-300">
-              {drafts.length} saved
-            </span>
+            <span className="ml-2 text-xs font-normal text-slate-500">{drafts.length}</span>
           )}
-        </h2>
+        </p>
         <button
           onClick={onStartNew}
-          className="text-xs uppercase tracking-wider font-medium text-chalk-50/90
-                     hover:text-chalk-50 transition-colors border border-chalk-50/30
-                     hover:border-chalk-50 px-3 py-1 rounded"
+          className="text-xs font-medium text-navy-800 hover:text-navy-600
+                     border border-navy-200 hover:border-navy-400 px-3 py-1 rounded transition-colors"
         >
           + Start new
         </button>
-      </header>
+      </div>
       <div className="p-4 md:p-5">
         {loading ? (
           <div className="text-sm text-slate-500 py-4 text-center">Loading drafts…</div>
@@ -1185,16 +1281,14 @@ function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilter
   // numbers don't shift as the rep flips between filters.
   return (
     <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
-      <header className="bg-navy-900 text-chalk-50 px-4 md:px-5 py-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm md:text-base font-medium">
-          Submitted
+      <div className="px-4 md:px-5 py-3 border-b border-page-200 bg-page-50">
+        <p className="text-sm font-medium text-slate-700">
+          Quotes &amp; deals
           {!loading && totalCount > 0 && (
-            <span className="ml-2 text-xs font-normal text-chalk-300">
-              {totalCount} total
-            </span>
+            <span className="ml-2 text-xs font-normal text-slate-500">{totalCount} total</span>
           )}
-        </h2>
-      </header>
+        </p>
+      </div>
 
       {/* Filter pills — only render if there's anything to filter. */}
       {!loading && totalCount > 0 && (
@@ -1834,6 +1928,41 @@ function DealActions({ row, onResubmit }) {
 }
 
 /* ───────────────────────── Small primitives ───────────────────────── */
+
+/** Summary stat card for the workspace header */
+function StatCard({ label, value, sub, color, onClick, active }) {
+  const colors = {
+    emerald: {
+      border:  active ? 'border-emerald-400' : 'border-page-200 hover:border-emerald-300',
+      value:   'text-emerald-700',
+      dot:     'bg-emerald-500',
+    },
+    amber: {
+      border:  active ? 'border-amber-400' : 'border-page-200 hover:border-amber-300',
+      value:   'text-amber-700',
+      dot:     'bg-amber-500',
+    },
+    slate: {
+      border:  active ? 'border-navy-400' : 'border-page-200 hover:border-navy-300',
+      value:   'text-navy-900',
+      dot:     'bg-slate-400',
+    },
+  };
+  const c = colors[color] || colors.slate;
+  return (
+    <button
+      onClick={onClick}
+      className={`bg-white border-2 ${c.border} rounded-lg p-3 md:p-4 text-left
+                  transition-colors w-full ${
+        active ? 'shadow-sm' : 'hover:shadow-sm'
+      }`}
+    >
+      <p className={`text-xl md:text-2xl font-semibold ${c.value}`}>{value}</p>
+      <p className="text-xs font-medium text-slate-700 mt-0.5">{label}</p>
+      {sub && <p className="text-[11px] text-slate-400 mt-0.5">{sub}</p>}
+    </button>
+  );
+}
 
 function SectionLabel({ children }) {
   return (
