@@ -873,7 +873,36 @@ function LeadBucket({ title, leads, expandedLeadId, onToggleExpand, onConvert, o
 
 function LeadRow({ lead, expanded, onToggle, onConvert, onLeadUpdated }) {
   const businessName = lead.dba_name || lead.legal_business_name || lead.customer_full_name || 'Unknown business';
-  const contactName  = (lead.dba_name || lead.legal_business_name) ? lead.customer_full_name : null;
+
+  // Contact name derivation. Prefer the structured first/last fields when
+  // present — they're more reliable than customer_full_name, which on some
+  // Jotform imports got stuffed with the business name (e.g. an "Island
+  // Oasis #4" lead where customer_full_name = "Island Oasis #4" and the
+  // real contact lived in customer_first_name/customer_last_name).
+  //
+  // Fall back to customer_full_name only if the structured fields are empty,
+  // and suppress the line entirely if the resulting name matches the business
+  // name (which means we have no real contact info, not a useful duplicate).
+  const fromParts = [lead.customer_first_name, lead.customer_last_name]
+    .map(s => (s || '').trim())
+    .filter(Boolean)
+    .join(' ');
+  let contactName = fromParts || (lead.customer_full_name || '').trim();
+  if (contactName && contactName.toLowerCase() === businessName.toLowerCase()) {
+    contactName = null;
+  }
+
+  // Phone + email for click-to-call / mailto. tel: links honor the raw
+  // digits — formatted strings like "(989) 916-8656" work fine in modern
+  // browsers and on iOS/Android, but we strip everything except digits and
+  // a leading + for the href to be safe.
+  const phoneDisplay = (lead.phone || lead.contact_number || '').trim() || null;
+  const phoneHref    = phoneDisplay
+    ? `tel:${phoneDisplay.replace(/[^\d+]/g, '')}`
+    : null;
+  const emailDisplay = (lead.contact_email || '').trim() || null;
+  const emailHref    = emailDisplay ? `mailto:${emailDisplay}` : null;
+
   const step         = leadStepLabel(lead.current_step);
   const stale        = isStale(lead.last_activity_at);
   const staleDaysAgo = stale ? staleDays(lead.last_activity_at) : 0;
@@ -881,12 +910,34 @@ function LeadRow({ lead, expanded, onToggle, onConvert, onLeadUpdated }) {
     ? formatRelativeTime(lead.last_activity_at)
     : lead.created_at ? formatRelativeTime(lead.created_at) : null;
 
+  // The whole row is a <button> that toggles expand/collapse. Phone/email
+  // links sit inside it, so we stop propagation on link clicks — otherwise
+  // tapping the phone number would expand the card instead of placing the
+  // call.
+  const stopToggle = (e) => e.stopPropagation();
+
   return (
     <li className="bg-page-50 border border-page-200 rounded overflow-hidden hover:border-emerald-300 transition-colors">
-      {/* Summary row */}
-      <button
+      {/* Summary row.
+
+          This is a <div> rather than a <button> on purpose: the click-to-call
+          and mailto links inside are <a> tags, and <a> inside <button> is
+          invalid HTML (browser behavior is undefined — some strip the link,
+          some break both). The div carries explicit button semantics — role,
+          tabIndex, Enter/Space keyboard handling — so screen readers and
+          keyboard users still see it as one big toggle target. */}
+      <div
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
         onClick={onToggle}
-        className="w-full text-left px-3 md:px-4 py-3 flex items-start justify-between gap-3"
+        onKeyDown={(e) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onToggle();
+          }
+        }}
+        className="w-full text-left px-3 md:px-4 py-3 flex items-start justify-between gap-3 cursor-pointer focus:outline-none focus:ring-2 focus:ring-emerald-400 focus:ring-inset"
       >
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5 flex-wrap mb-1">
@@ -908,19 +959,65 @@ function LeadRow({ lead, expanded, onToggle, onConvert, onLeadUpdated }) {
             )}
           </div>
           <p className="text-sm font-medium text-slate-900 truncate">{businessName}</p>
-          <div className="flex items-center gap-2 flex-wrap mt-0.5">
-            {contactName && <span className="text-xs text-slate-500 truncate">{contactName}</span>}
-            {lead.customer_interest && (
-              <span className="text-xs text-slate-400 truncate">{lead.customer_interest}</span>
-            )}
-          </div>
+          {/* Contact name — bumped to its own line and given more weight
+              than before so the rep doesn't have to expand the card to know
+              who to ask for when they call. */}
+          {contactName && (
+            <p className="text-sm text-slate-700 truncate mt-0.5">{contactName}</p>
+          )}
+          {/* Email link, kept inline since most reps will call first and only
+              email as a fallback. The phone number gets a dedicated tap-target
+              button on the right side of the card — see below. */}
+          {emailHref && (
+            <div className="flex items-center gap-3 flex-wrap mt-1">
+              <a
+                href={emailHref}
+                onClick={stopToggle}
+                className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-900 hover:underline truncate min-w-0"
+                title={`Email ${contactName || businessName}`}
+              >
+                <svg className="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round"
+                        d="M3 8l9 6 9-6M5 19h14a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2Z" />
+                </svg>
+                <span className="truncate">{emailDisplay}</span>
+              </a>
+            </div>
+          )}
+          {lead.customer_interest && (
+            <p className="text-xs text-slate-400 truncate mt-0.5">{lead.customer_interest}</p>
+          )}
           {lead.jotform_submission_id && (
             <p className="text-[11px] font-mono text-slate-400 mt-0.5">HTH: {lead.jotform_submission_id}</p>
           )}
         </div>
-        <div className="flex items-center gap-3 flex-shrink-0">
+        <div className="flex items-center gap-2 md:gap-3 flex-shrink-0">
           {lastActivity && (
             <span className="text-xs text-slate-400 hidden md:inline">{lastActivity}</span>
+          )}
+          {/* Dedicated Call button. Sits on the right of the card so the rep
+              has a big, finger-friendly tap target instead of a small inline
+              text link. The button shows the phone number alongside the icon
+              so they can read it before tapping. stopToggle prevents the
+              card-expand handler from firing when the button is tapped. */}
+          {phoneHref && (
+            <a
+              href={phoneHref}
+              onClick={stopToggle}
+              className="inline-flex items-center gap-1.5 px-3 py-2.5 rounded-md
+                         bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800
+                         text-white text-sm font-medium whitespace-nowrap
+                         transition-colors shadow-sm
+                         focus:outline-none focus:ring-2 focus:ring-emerald-300"
+              title={`Call ${contactName || businessName} at ${phoneDisplay}`}
+              aria-label={`Call ${contactName || businessName} at ${phoneDisplay}`}
+            >
+              <svg className="w-4 h-4 flex-shrink-0" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round"
+                      d="M3 5a2 2 0 0 1 2-2h2.28a1 1 0 0 1 .95.68l1.5 4.49a1 1 0 0 1-.5 1.21l-1.78.89a11 11 0 0 0 5.6 5.6l.89-1.78a1 1 0 0 1 1.21-.5l4.49 1.5a1 1 0 0 1 .68.95V19a2 2 0 0 1-2 2h-1C9.61 21 3 14.39 3 6V5Z" />
+              </svg>
+              <span className="hidden sm:inline">{phoneDisplay}</span>
+            </a>
           )}
           <svg
             className={`w-4 h-4 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
@@ -929,7 +1026,7 @@ function LeadRow({ lead, expanded, onToggle, onConvert, onLeadUpdated }) {
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
           </svg>
         </div>
-      </button>
+      </div>
 
       {/* Expanded detail + interaction panel */}
       {expanded && (
