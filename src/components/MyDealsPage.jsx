@@ -1042,15 +1042,7 @@ function LeadDetailPanel({ lead, onConvert, onLeadUpdated }) {
         >
           Convert to Deal
         </button>
-        <a
-          href={`${LEADS_PORTAL_URL}/?lead=${localLead.id}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="px-3 py-2 text-sm text-slate-600 hover:text-navy-900
-                     border border-page-200 hover:border-navy-300 rounded transition-colors"
-        >
-          Open in Dashboard ↗
-        </a>
+
 
         {/* Mark Lost */}
         {!showLostForm ? (
