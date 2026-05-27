@@ -14,6 +14,7 @@ import DealDetailView from './DealDetailView.jsx';
 import {
   fetchMyLeads, isLeadsPortalConfigured, leadStepLabel, bucketLeads,
   leadToDealPayload, stampLeadConverted, logLeadActivity,
+  logRepContact, markLeadLost, fetchLeadActivity,
 } from '../lib/leadsPortal.js';
 
 /**
@@ -379,6 +380,17 @@ export default function MyDealsPage({ profile, session, navigate }) {
         expandedLeadId={expandedLeadId}
         onToggleExpand={(id) => setExpandedLeadId((prev) => (prev === id ? null : id))}
         onConvert={(lead) => { setConvertError(null); setConvertTarget(lead); }}
+        onLeadUpdated={(leadId, patch) => {
+          // Patch the in-memory lead so the card re-renders immediately
+          // without waiting for a full refetch.
+          setLeads((prev) => prev.map((l) =>
+            l.id === leadId ? { ...l, ...patch } : l
+          ));
+          // If the lead is now lost or converted, remove it from the list
+          if (patch.status && patch.status !== 'active') {
+            setLeads((prev) => prev.filter((l) => l.id !== leadId));
+          }
+        }}
       />
 
       {/* Convert-to-deal confirmation modal */}
@@ -458,7 +470,7 @@ function MyLeadsSection({
   leads, loading, error,
   search, onSearchChange,
   stageFilter, onStageFilterChange,
-  expandedLeadId, onToggleExpand, onConvert,
+  expandedLeadId, onToggleExpand, onConvert, onLeadUpdated,
 }) {
   // Apply search filter
   const q = (search || '').toLowerCase().trim();
@@ -545,6 +557,7 @@ function MyLeadsSection({
                     expandedLeadId={expandedLeadId}
                     onToggleExpand={onToggleExpand}
                     onConvert={onConvert}
+                    onLeadUpdated={onLeadUpdated}
                   />
                 )}
                 {showFollow && inFollowUp.length > 0 && (
@@ -554,6 +567,7 @@ function MyLeadsSection({
                     expandedLeadId={expandedLeadId}
                     onToggleExpand={onToggleExpand}
                     onConvert={onConvert}
+                    onLeadUpdated={onLeadUpdated}
                   />
                 )}
                 {stageFilter === 'all' && other.length > 0 && (
@@ -563,6 +577,7 @@ function MyLeadsSection({
                     expandedLeadId={expandedLeadId}
                     onToggleExpand={onToggleExpand}
                     onConvert={onConvert}
+                    onLeadUpdated={onLeadUpdated}
                   />
                 )}
               </div>
@@ -593,7 +608,7 @@ function LeadsSectionHeader({ totalActive, loading }) {
   );
 }
 
-function LeadBucket({ title, leads, expandedLeadId, onToggleExpand, onConvert }) {
+function LeadBucket({ title, leads, expandedLeadId, onToggleExpand, onConvert, onLeadUpdated }) {
   return (
     <div>
       <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
@@ -607,6 +622,7 @@ function LeadBucket({ title, leads, expandedLeadId, onToggleExpand, onConvert })
             expanded={expandedLeadId === lead.id}
             onToggle={() => onToggleExpand(lead.id)}
             onConvert={() => onConvert(lead)}
+            onLeadUpdated={onLeadUpdated}
           />
         ))}
       </ul>
@@ -614,7 +630,7 @@ function LeadBucket({ title, leads, expandedLeadId, onToggleExpand, onConvert })
   );
 }
 
-function LeadRow({ lead, expanded, onToggle, onConvert }) {
+function LeadRow({ lead, expanded, onToggle, onConvert, onLeadUpdated }) {
   const businessName = lead.dba_name || lead.legal_business_name || lead.customer_full_name || 'Unknown business';
   const contactName  = (lead.dba_name || lead.legal_business_name) ? lead.customer_full_name : null;
   const step         = leadStepLabel(lead.current_step);
@@ -674,81 +690,308 @@ function LeadRow({ lead, expanded, onToggle, onConvert }) {
         </div>
       </button>
 
-      {/* Expanded detail */}
+      {/* Expanded detail + interaction panel */}
       {expanded && (
-        <div className="border-t border-page-200 px-3 md:px-4 py-3 bg-white">
-          <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 text-sm mb-4">
-            {lead.contact_email && (
-              <>
-                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Email</dt>
-                <dd><a href={`mailto:${lead.contact_email}`} className="hover:underline text-navy-800">{lead.contact_email}</a></dd>
-              </>
-            )}
-            {(lead.phone || lead.contact_number) && (
-              <>
-                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Phone</dt>
-                <dd><a href={`tel:${lead.phone || lead.contact_number}`} className="hover:underline text-navy-800">{lead.phone || lead.contact_number}</a></dd>
-              </>
-            )}
-            {lead.store_address && (
-              <>
-                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Address</dt>
-                <dd className="text-slate-800">{lead.store_address}</dd>
-              </>
-            )}
-            {lead.customer_interest && (
-              <>
-                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Interest</dt>
-                <dd className="text-slate-800">{lead.customer_interest}</dd>
-              </>
-            )}
-            {lead.program_source && (
-              <>
-                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Program source</dt>
-                <dd className="text-slate-800">{lead.program_source}</dd>
-              </>
-            )}
-            {lead.distributor && (
-              <>
-                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Distributor</dt>
-                <dd className="text-slate-800">{lead.distributor}</dd>
-              </>
-            )}
-            {lead.beverage_needs && (
-              <>
-                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Beverage needs</dt>
-                <dd className="text-slate-800">{lead.beverage_needs}</dd>
-              </>
-            )}
-            {lastActivity && (
-              <>
-                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Last activity</dt>
-                <dd className="text-slate-800">{lastActivity}</dd>
-              </>
-            )}
-          </dl>
-
-          <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={onConvert}
-              className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm
-                         font-medium rounded transition-colors"
-            >
-              Convert to Deal
-            </button>
-            <a
-              href={`${LEADS_PORTAL_URL}/?lead=${lead.id}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3 py-2 text-sm text-slate-600 hover:text-navy-900
-                         border border-page-200 hover:border-navy-300 rounded transition-colors"
-            >
-              Open in Leads Portal ↗
-            </a>
-          </div>
-        </div>
+        <LeadDetailPanel
+          lead={lead}
+          onConvert={onConvert}
+          onLeadUpdated={onLeadUpdated}
+        />
       )}
     </li>
+  );
+}
+
+/* ───────────────────────── Lead detail + interaction panel ───────────────────────── */
+
+const CONTACT_METHODS = [
+  { value: 'call',  label: '☎ Call' },
+  { value: 'email', label: '✉ Email' },
+  { value: 'text',  label: '💬 Text' },
+  { value: 'visit', label: '⌂ In-person' },
+];
+
+function LeadDetailPanel({ lead, onConvert, onLeadUpdated }) {
+  // Local copy of the lead so optimistic updates render immediately
+  const [localLead, setLocalLead] = useState(lead);
+  // Contact logger state
+  const [method, setMethod] = useState('call');
+  const [reached, setReached] = useState(false);
+  const [note, setNote] = useState('');
+  const [logging, setLogging] = useState(false);
+  const [logError, setLogError] = useState(null);
+  const [logSuccess, setLogSuccess] = useState(null);
+  // Activity feed
+  const [activity, setActivity] = useState([]);
+  const [activityLoading, setActivityLoading] = useState(true);
+  // Mark lost
+  const [lostReason, setLostReason] = useState('');
+  const [showLostForm, setShowLostForm] = useState(false);
+  const [markingLost, setMarkingLost] = useState(false);
+
+  // Load activity on mount
+  useEffect(() => {
+    setActivityLoading(true);
+    fetchLeadActivity(lead.id).then(({ data }) => {
+      setActivity(data);
+      setActivityLoading(false);
+    });
+  }, [lead.id]);
+
+  // Keep localLead in sync when parent re-renders (e.g. after bucket refresh)
+  useEffect(() => { setLocalLead(lead); }, [lead]);
+
+  async function handleLogContact() {
+    if (!note.trim()) { setLogError('Describe what happened.'); return; }
+    setLogError(null);
+    setLogSuccess(null);
+    setLogging(true);
+
+    const { toStep, error } = await logRepContact({
+      leadId: localLead.id,
+      currentStep: localLead.current_step,
+      method,
+      reached,
+      note: note.trim(),
+    });
+
+    if (error) {
+      setLogError(`Couldn’t save: ${error.message}`);
+      setLogging(false);
+      return;
+    }
+
+    const stepped = toStep !== localLead.current_step;
+    const successMsg = stepped
+      ? `Logged — moved to “${leadStepLabel(toStep)}”`
+      : 'Contact attempt logged.';
+
+    // Optimistic update
+    const patch = { current_step: toStep, last_activity_at: new Date().toISOString() };
+    setLocalLead((prev) => ({ ...prev, ...patch }));
+    onLeadUpdated(localLead.id, patch);
+
+    // Prepend to activity feed
+    const METHOD_LABELS = { call: 'Call', email: 'Email', text: 'Text', visit: 'In-person' };
+    const action = stepped
+      ? `${METHOD_LABELS[method]} — reached customer: ${leadStepLabel(toStep)}`
+      : `${METHOD_LABELS[method]} — ${reached ? 'reached customer' : 'attempted contact'}`;
+    setActivity((prev) => [{
+      id: `tmp-${Date.now()}`,
+      action,
+      actor_role: 'ronnoco_rep',
+      from_step: localLead.current_step,
+      to_step: stepped ? toStep : null,
+      note: note.trim(),
+      created_at: new Date().toISOString(),
+    }, ...prev]);
+
+    setNote('');
+    setReached(false);
+    setLogging(false);
+    setLogSuccess(successMsg);
+    setTimeout(() => setLogSuccess(null), 4000);
+  }
+
+  async function handleMarkLost() {
+    if (!lostReason.trim()) { setLogError('Please enter a reason.'); return; }
+    setMarkingLost(true);
+    const { error } = await markLeadLost(localLead.id, localLead.current_step, lostReason.trim());
+    if (error) {
+      setLogError(`Couldn’t mark lost: ${error.message}`);
+      setMarkingLost(false);
+      return;
+    }
+    onLeadUpdated(localLead.id, { status: 'lost' });
+    setMarkingLost(false);
+  }
+
+  const phone = localLead.phone || localLead.contact_number;
+
+  return (
+    <div className="border-t border-page-200 bg-white">
+      {/* Info grid */}
+      <div className="px-3 md:px-4 pt-3 pb-2">
+        <dl className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-1.5 text-sm">
+          {localLead.contact_email && (
+            <><dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Email</dt>
+              <dd><a href={`mailto:${localLead.contact_email}`} className="hover:underline text-navy-800">{localLead.contact_email}</a></dd></>
+          )}
+          {phone && (
+            <><dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Phone</dt>
+              <dd><a href={`tel:${phone}`} className="hover:underline text-navy-800">{phone}</a></dd></>
+          )}
+          {localLead.store_address && (
+            <><dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Address</dt>
+              <dd className="text-slate-800">{localLead.store_address}</dd></>
+          )}
+          {localLead.customer_interest && (
+            <><dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Interest</dt>
+              <dd className="text-slate-800">{localLead.customer_interest}</dd></>
+          )}
+          {localLead.program_source && (
+            <><dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Program</dt>
+              <dd className="text-slate-800">{localLead.program_source}</dd></>
+          )}
+          {localLead.distributor && (
+            <><dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Distributor</dt>
+              <dd className="text-slate-800">{localLead.distributor}</dd></>
+          )}
+          {localLead.beverage_needs && (
+            <><dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Beverage needs</dt>
+              <dd className="text-slate-800">{localLead.beverage_needs}</dd></>
+          )}
+          {localLead.notes && (
+            <><dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Notes</dt>
+              <dd className="text-slate-800">{localLead.notes}</dd></>
+          )}
+        </dl>
+      </div>
+
+      {/* Contact logger */}
+      <div className="mx-3 md:mx-4 mb-3 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+        <p className="text-xs font-semibold uppercase tracking-wide text-emerald-800 mb-2">Log contact</p>
+
+        {/* Method picker */}
+        <div className="flex gap-1.5 mb-2">
+          {CONTACT_METHODS.map(({ value, label }) => (
+            <button
+              key={value}
+              onClick={() => setMethod(value)}
+              className={`px-2.5 py-1.5 text-xs font-medium rounded transition-colors ${
+                method === value
+                  ? 'bg-emerald-700 text-white'
+                  : 'bg-white border border-emerald-200 text-emerald-800 hover:bg-emerald-100'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {/* Reached checkbox */}
+        <label className="flex items-center gap-2 text-sm text-slate-700 mb-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={reached}
+            onChange={(e) => setReached(e.target.checked)}
+            className="w-4 h-4 accent-emerald-700"
+          />
+          Made actual contact (not just voicemail)
+        </label>
+
+        {/* Note textarea */}
+        <textarea
+          rows={2}
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Describe what happened…"
+          className="w-full text-sm border border-emerald-200 rounded px-3 py-2 mb-2
+                     placeholder-slate-400 focus:outline-none focus:border-emerald-500 resize-none"
+        />
+
+        {logError && (
+          <p className="text-xs text-bad mb-2">{logError}</p>
+        )}
+        {logSuccess && (
+          <p className="text-xs text-emerald-700 font-medium mb-2">✓ {logSuccess}</p>
+        )}
+
+        <button
+          onClick={handleLogContact}
+          disabled={logging}
+          className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm
+                     font-medium rounded transition-colors disabled:opacity-60"
+        >
+          {logging ? 'Saving…' : 'Log contact'}
+        </button>
+      </div>
+
+      {/* Activity feed */}
+      <div className="mx-3 md:mx-4 mb-3">
+        <p className="text-xs font-semibold uppercase tracking-wide text-slate-500 mb-2">Activity</p>
+        {activityLoading ? (
+          <p className="text-xs text-slate-400">Loading…</p>
+        ) : activity.length === 0 ? (
+          <p className="text-xs text-slate-400">No activity yet.</p>
+        ) : (
+          <ul className="space-y-1.5">
+            {activity.map((entry) => (
+              <li key={entry.id} className="text-xs">
+                <div className="flex items-start gap-2">
+                  <span className="text-slate-400 whitespace-nowrap mt-0.5">
+                    {formatRelativeTime(entry.created_at)}
+                  </span>
+                  <div className="min-w-0">
+                    <span className="font-medium text-slate-700">{entry.action}</span>
+                    {entry.note && (
+                      <span className="text-slate-500"> — {entry.note}</span>
+                    )}
+                  </div>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* Action buttons */}
+      <div className="px-3 md:px-4 pb-3 flex items-center gap-2 flex-wrap border-t border-page-100 pt-3">
+        <button
+          onClick={onConvert}
+          className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm
+                     font-medium rounded transition-colors"
+        >
+          Convert to Deal
+        </button>
+        <a
+          href={`${LEADS_PORTAL_URL}/?lead=${localLead.id}`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="px-3 py-2 text-sm text-slate-600 hover:text-navy-900
+                     border border-page-200 hover:border-navy-300 rounded transition-colors"
+        >
+          Open in Dashboard ↗
+        </a>
+
+        {/* Mark Lost */}
+        {!showLostForm ? (
+          <button
+            onClick={() => setShowLostForm(true)}
+            className="ml-auto px-3 py-2 text-xs text-slate-500 hover:text-bad
+                       border border-page-200 hover:border-red-300 rounded transition-colors"
+          >
+            Mark as lost
+          </button>
+        ) : (
+          <div className="w-full mt-2 flex items-center gap-2">
+            <input
+              type="text"
+              value={lostReason}
+              onChange={(e) => setLostReason(e.target.value)}
+              placeholder="Reason for loss…"
+              className="flex-1 text-sm border border-red-200 rounded px-3 py-1.5
+                         placeholder-slate-400 focus:outline-none focus:border-red-400"
+            />
+            <button
+              onClick={handleMarkLost}
+              disabled={markingLost}
+              className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs
+                         font-medium rounded transition-colors disabled:opacity-60"
+            >
+              {markingLost ? 'Saving…' : 'Confirm'}
+            </button>
+            <button
+              onClick={() => { setShowLostForm(false); setLostReason(''); }}
+              className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700
+                         border border-page-200 rounded transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 

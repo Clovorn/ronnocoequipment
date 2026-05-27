@@ -72,18 +72,105 @@ export async function stampLeadConverted(leadId, dealId) {
 /**
  * Log an activity entry to the leads portal's activity_log table.
  */
-export async function logLeadActivity(leadId, actorRole, action, fromStep, note) {
+export async function logLeadActivity(leadId, actorRole, action, fromStep, toStep, note) {
   try {
     await leadsPortal.from('activity_log').insert({
       lead_id: leadId,
       actor_role: actorRole,
       action,
       from_step: fromStep || null,
+      to_step: toStep || null,
       note: note || null,
     });
   } catch (err) {
     console.warn('Could not log lead activity:', err);
   }
+}
+
+/**
+ * Log a rep contact attempt and optionally advance the lead's step.
+ *
+ * Mirrors the leads portal's confirmFollowup() logic exactly:
+ * - reached=true + rep_assigned/etc  → customer_contacted
+ * - reached=true + customer_contacted → follow_up
+ * - reached=false                     → no step change, just log
+ *
+ * Returns { toStep, error } where toStep is the new step (or unchanged).
+ */
+export async function logRepContact({ leadId, currentStep, method, reached, note }) {
+  const METHOD_LABELS = { call: 'Call', email: 'Email', text: 'Text', visit: 'In-person' };
+  const methodLabel = METHOD_LABELS[method] || method;
+
+  let toStep = currentStep;
+  if (reached) {
+    if (['rep_assigned', 'lead_received', 'awaiting_director', 'awaiting_rep'].includes(currentStep)) {
+      toStep = 'customer_contacted';
+    } else if (currentStep === 'customer_contacted') {
+      toStep = 'follow_up';
+    }
+  }
+
+  const stepped = toStep !== currentStep;
+  const action = stepped
+    ? `${methodLabel} — reached customer: ${LEAD_STEP_LABELS[toStep] || toStep}`
+    : `${methodLabel} — ${reached ? 'reached customer' : 'attempted contact'}`;
+
+  // Update the lead row
+  const updatePayload = { updated_at: new Date().toISOString() };
+  if (stepped) updatePayload.current_step = toStep;
+
+  const { error: updateError } = await leadsPortal
+    .from('leads')
+    .update(updatePayload)
+    .eq('id', leadId);
+
+  if (updateError) return { toStep: currentStep, error: updateError };
+
+  // Log activity
+  await leadsPortal.from('activity_log').insert({
+    lead_id: leadId,
+    actor_role: 'ronnoco_rep',
+    action,
+    from_step: currentStep,
+    to_step: stepped ? toStep : null,
+    note: note || null,
+  });
+
+  return { toStep, error: null };
+}
+
+/**
+ * Mark a lead as lost.
+ */
+export async function markLeadLost(leadId, currentStep, reason) {
+  const { error } = await leadsPortal
+    .from('leads')
+    .update({ status: 'lost', updated_at: new Date().toISOString() })
+    .eq('id', leadId);
+  if (error) return { error };
+
+  await leadsPortal.from('activity_log').insert({
+    lead_id: leadId,
+    actor_role: 'ronnoco_rep',
+    action: 'Marked as lost',
+    from_step: currentStep || null,
+    note: reason || null,
+  });
+
+  return { error: null };
+}
+
+/**
+ * Fetch recent activity log entries for a single lead.
+ */
+export async function fetchLeadActivity(leadId) {
+  const { data, error } = await leadsPortal
+    .from('activity_log')
+    .select('id, action, actor_role, from_step, to_step, note, created_at')
+    .eq('lead_id', leadId)
+    .order('created_at', { ascending: false })
+    .limit(30);
+  return { data: data ?? [], error };
 }
 
 /** Human-readable labels for leads portal step values. */
