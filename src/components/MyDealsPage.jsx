@@ -6,10 +6,15 @@ import {
   recordCustomerDecision,
   resubmitDeal,
   isDealPipelineConfigured,
+  submitDealToPipeline,
+  logDealActivity,
 } from '../lib/dealPipeline.js';
 import { DECISIONS, getStepStatuses, isTerminalDenial, PHASE_LABELS, STEP_LABELS } from '../lib/pipelineSteps.js';
 import DealDetailView from './DealDetailView.jsx';
-import { fetchMyLeads, isLeadsPortalConfigured, leadStepLabel } from '../lib/leadsPortal.js';
+import {
+  fetchMyLeads, isLeadsPortalConfigured, leadStepLabel, bucketLeads,
+  leadToDealPayload, stampLeadConverted, logLeadActivity,
+} from '../lib/leadsPortal.js';
 
 /**
  * MyDealsPage — the rep's personal workspace.
@@ -62,6 +67,12 @@ export default function MyDealsPage({ profile, session, navigate }) {
   const [leadsLoading, setLeadsLoading] = useState(true);
   const [leadsError, setLeadsError] = useState(null);
   const [expandedLeadId, setExpandedLeadId] = useState(null);
+  const [leadsSearch, setLeadsSearch] = useState('');
+  const [leadsStageFilter, setLeadsStageFilter] = useState('all'); // 'all' | 'needContact' | 'followUp'
+  // Convert modal state
+  const [convertTarget, setConvertTarget] = useState(null);    // lead row being converted
+  const [converting, setConverting] = useState(false);
+  const [convertError, setConvertError] = useState(null);
 
   /* ─── v31 resubmit modal state ─── */
   // When non-null, the resubmit modal is open and pointing at this deal row.
@@ -193,6 +204,93 @@ export default function MyDealsPage({ profile, session, navigate }) {
     setExpandedId(row.id);
   }
 
+  /**
+   * Convert a lead to a deal:
+   *   1. Duplicate-check (jotform_submission_id uniqueness)
+   *   2. Insert deal row into pipeline DB
+   *   3. Stamp lead with deal_id + status='won'
+   *   4. Log activity on both sides
+   *   5. Navigate to My Deals so the rep sees their new deal
+   */
+  async function handleConvertLead(lead) {
+    setConvertError(null);
+    setConverting(true);
+    try {
+      // Step 1 — duplicate check
+      if (lead.jotform_submission_id) {
+        const { data: existing } = await import('../lib/dealPipeline.js').then(m =>
+          m.dealPipeline
+            ? m.dealPipeline.from('deals')
+                .select('id')
+                .eq('jotform_submission_id', lead.jotform_submission_id)
+                .maybeSingle()
+            : { data: null }
+        );
+        if (existing?.id) {
+          setConvertError(
+            `This lead is already a deal (ID: ${existing.id.slice(0, 8)}…). ` +
+            `Check My Deals or the Pipeline Dashboard.`
+          );
+          setConverting(false);
+          return;
+        }
+      }
+
+      // Step 2 — create deal in pipeline DB
+      const payload = leadToDealPayload(lead);
+      const { data: newDeal, error: dealError } = await submitDealToPipeline(payload);
+      if (dealError || !newDeal) {
+        setConvertError(`Couldn’t create deal: ${dealError?.message || 'Unknown error'}`);
+        setConverting(false);
+        return;
+      }
+
+      // Step 3 — stamp lead (best-effort; don’t fail conversion if this fails)
+      const { error: stampError } = await stampLeadConverted(lead.id, newDeal.id);
+      if (stampError) {
+        // Deal created but lead not stamped. Warn the rep but don’t undo.
+        setConvertError(
+          `Deal created (${newDeal.id.slice(0, 8)}…) but couldn’t update the lead record. ` +
+          `Please manually mark this lead as won in the Leads Portal.`
+        );
+        // Still fall through to log + navigate
+      }
+
+      // Step 4 — activity logs (both best-effort)
+      await logLeadActivity(
+        lead.id,
+        'ronnoco_rep',
+        'Converted to deal in Deal Builder',
+        lead.current_step,
+        `Deal ID: ${newDeal.id}`
+      );
+      await logDealActivity(
+        newDeal.id,
+        `Created from distributor lead ${
+          lead.jotform_submission_id || lead.id.slice(0, 8)
+        }`,
+        null,
+        profile?.display_name || session?.user?.email || 'rep'
+      );
+
+      // Step 5 — remove lead from local list + close modal + navigate
+      setLeads((prev) => prev.filter((l) => l.id !== lead.id));
+      setConvertTarget(null);
+      setConverting(false);
+
+      // Refresh submissions so the new deal appears immediately
+      const { data: updatedDeals } = await import('../lib/dealPipeline.js').then(m =>
+        m.fetchMyDeals(session?.user?.email)
+      );
+      if (updatedDeals) setSubmissions(updatedDeals);
+
+      navigate('my-deals');
+    } catch (err) {
+      setConvertError(`Unexpected error: ${err.message}`);
+      setConverting(false);
+    }
+  }
+
   async function handleDelete(draft) {
     const ok = window.confirm(
       `Delete draft "${draft.draft_name}"? This can't be undone.`
@@ -270,14 +368,27 @@ export default function MyDealsPage({ profile, session, navigate }) {
       </div>
 
       {/* ─── My Leads (from Distributor Leads portal) ─── */}
-      {isLeadsPortalConfigured && (
-        <MyLeadsSection
-          leads={leads}
-          loading={leadsLoading}
-          error={leadsError}
-          expandedLeadId={expandedLeadId}
-          onToggleExpand={(id) => setExpandedLeadId((prev) => (prev === id ? null : id))}
-          onConvert={(lead) => navigate('deal', { leadData: lead })}
+      <MyLeadsSection
+        leads={leads}
+        loading={leadsLoading}
+        error={leadsError}
+        search={leadsSearch}
+        onSearchChange={setLeadsSearch}
+        stageFilter={leadsStageFilter}
+        onStageFilterChange={setLeadsStageFilter}
+        expandedLeadId={expandedLeadId}
+        onToggleExpand={(id) => setExpandedLeadId((prev) => (prev === id ? null : id))}
+        onConvert={(lead) => { setConvertError(null); setConvertTarget(lead); }}
+      />
+
+      {/* Convert-to-deal confirmation modal */}
+      {convertTarget && (
+        <ConvertLeadModal
+          lead={convertTarget}
+          converting={converting}
+          error={convertError}
+          onCancel={() => { setConvertTarget(null); setConvertError(null); }}
+          onConfirm={() => handleConvertLead(convertTarget)}
         />
       )}
 
@@ -325,32 +436,67 @@ export default function MyDealsPage({ profile, session, navigate }) {
 
 /* ───────────────────────── My Leads section ───────────────────────── */
 
+const LEADS_PORTAL_URL = 'https://distributorleads.netlify.app';
+const STALE_DAYS = 14;
+
+function isStale(lastActivityAt) {
+  if (!lastActivityAt) return false;
+  const diffMs = Date.now() - new Date(lastActivityAt).getTime();
+  return diffMs > STALE_DAYS * 24 * 60 * 60 * 1000;
+}
+
+function staleDays(lastActivityAt) {
+  if (!lastActivityAt) return 0;
+  return Math.floor((Date.now() - new Date(lastActivityAt).getTime()) / (24 * 60 * 60 * 1000));
+}
+
 /**
- * Shows unconverted leads from the Distributor Leads portal that are
- * assigned to the logged-in rep. Each card is clickable to expand a
- * read-only detail view, with a "Convert to Deal" CTA.
+ * Shows unconverted leads from the Distributor Leads portal assigned to the
+ * logged-in rep. Grouped into action buckets with search + stage filter.
  */
-function MyLeadsSection({ leads, loading, error, expandedLeadId, onToggleExpand, onConvert }) {
-  // Don't render the section at all if there are no leads and we're not loading —
-  // it keeps the workspace clean for reps who have no portal leads.
-  if (!loading && !error && leads.length === 0) return null;
+function MyLeadsSection({
+  leads, loading, error,
+  search, onSearchChange,
+  stageFilter, onStageFilterChange,
+  expandedLeadId, onToggleExpand, onConvert,
+}) {
+  // Apply search filter
+  const q = (search || '').toLowerCase().trim();
+  const filtered = q
+    ? leads.filter((l) => [
+        l.dba_name, l.legal_business_name, l.customer_full_name,
+        l.contact_email, l.phone, l.contact_number, l.customer_interest,
+      ].some((v) => (v || '').toLowerCase().includes(q)))
+    : leads;
+
+  const { needContact, inFollowUp, other } = bucketLeads(filtered);
+
+  const showNeed   = stageFilter === 'all' || stageFilter === 'needContact';
+  const showFollow = stageFilter === 'all' || stageFilter === 'followUp';
+
+  const totalVisible =
+    (showNeed   ? needContact.length : 0) +
+    (showFollow ? inFollowUp.length  : 0) +
+    (stageFilter === 'all' ? other.length : 0);
+
+  // Hide the whole section if portal is configured but there are truly no leads
+  // (not loading, no error). Empty-state is shown only when section is visible.
+  if (!loading && !error && leads.length === 0) {
+    return (
+      <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
+        <LeadsSectionHeader totalActive={0} />
+        <div className="p-6 text-center">
+          <p className="text-sm text-slate-500">
+            No new leads right now. Your director will route leads to you here.
+          </p>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
-      <header className="bg-emerald-800 text-white px-4 md:px-5 py-3 flex items-center justify-between gap-3">
-        <h2 className="text-sm md:text-base font-medium flex items-center gap-2">
-          <svg className="w-4 h-4 opacity-80" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
-          </svg>
-          My Leads
-          {!loading && leads.length > 0 && (
-            <span className="ml-1 text-xs font-normal text-emerald-200">
-              {leads.length} active
-            </span>
-          )}
-        </h2>
-        <span className="text-xs text-emerald-200 font-normal">From Distributor Leads portal</span>
-      </header>
+      <LeadsSectionHeader totalActive={leads.length} loading={loading} />
 
       <div className="p-4 md:p-5">
         {loading ? (
@@ -360,60 +506,159 @@ function MyLeadsSection({ leads, loading, error, expandedLeadId, onToggleExpand,
             Couldn’t load leads: {error}
           </div>
         ) : (
-          <ul className="space-y-2">
-            {leads.map((lead) => (
-              <LeadRow
-                key={lead.id}
-                lead={lead}
-                expanded={expandedLeadId === lead.id}
-                onToggle={() => onToggleExpand(lead.id)}
-                onConvert={() => onConvert(lead)}
+          <>
+            {/* Search + filter bar */}
+            <div className="flex flex-col sm:flex-row gap-2 mb-4">
+              <input
+                type="search"
+                placeholder="Search leads…"
+                value={search}
+                onChange={(e) => onSearchChange(e.target.value)}
+                className="flex-1 text-sm border border-page-200 rounded px-3 py-1.5
+                           placeholder-slate-400 focus:outline-none focus:border-emerald-400"
               />
-            ))}
-          </ul>
+              <div className="flex gap-1">
+                {[['all', 'All'], ['needContact', 'Need contact'], ['followUp', 'Follow-up']].map(([val, lbl]) => (
+                  <button
+                    key={val}
+                    onClick={() => onStageFilterChange(val)}
+                    className={`px-3 py-1.5 text-xs font-medium rounded transition-colors whitespace-nowrap ${
+                      stageFilter === val
+                        ? 'bg-emerald-700 text-white'
+                        : 'bg-page-50 border border-page-200 text-slate-600 hover:border-emerald-300'
+                    }`}
+                  >
+                    {lbl}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {totalVisible === 0 ? (
+              <p className="text-sm text-slate-500 text-center py-4">No leads match your filter.</p>
+            ) : (
+              <div className="space-y-4">
+                {showNeed && needContact.length > 0 && (
+                  <LeadBucket
+                    title="Need first contact"
+                    leads={needContact}
+                    expandedLeadId={expandedLeadId}
+                    onToggleExpand={onToggleExpand}
+                    onConvert={onConvert}
+                  />
+                )}
+                {showFollow && inFollowUp.length > 0 && (
+                  <LeadBucket
+                    title="In follow-up"
+                    leads={inFollowUp}
+                    expandedLeadId={expandedLeadId}
+                    onToggleExpand={onToggleExpand}
+                    onConvert={onConvert}
+                  />
+                )}
+                {stageFilter === 'all' && other.length > 0 && (
+                  <LeadBucket
+                    title="Other"
+                    leads={other}
+                    expandedLeadId={expandedLeadId}
+                    onToggleExpand={onToggleExpand}
+                    onConvert={onConvert}
+                  />
+                )}
+              </div>
+            )}
+          </>
         )}
       </div>
     </section>
   );
 }
 
+function LeadsSectionHeader({ totalActive, loading }) {
+  return (
+    <header className="bg-emerald-800 text-white px-4 md:px-5 py-3 flex items-center justify-between gap-3">
+      <h2 className="text-sm md:text-base font-medium flex items-center gap-2">
+        <svg className="w-4 h-4 opacity-80" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+        </svg>
+        My Leads
+        {!loading && totalActive > 0 && (
+          <span className="ml-1 text-xs font-normal text-emerald-200">
+            {totalActive} active
+          </span>
+        )}
+      </h2>
+      <span className="text-xs text-emerald-200 font-normal">From Distributor Leads portal</span>
+    </header>
+  );
+}
+
+function LeadBucket({ title, leads, expandedLeadId, onToggleExpand, onConvert }) {
+  return (
+    <div>
+      <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 mb-2">
+        {title} <span className="font-normal normal-case">({leads.length})</span>
+      </h3>
+      <ul className="space-y-2">
+        {leads.map((lead) => (
+          <LeadRow
+            key={lead.id}
+            lead={lead}
+            expanded={expandedLeadId === lead.id}
+            onToggle={() => onToggleExpand(lead.id)}
+            onConvert={() => onConvert(lead)}
+          />
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function LeadRow({ lead, expanded, onToggle, onConvert }) {
-  const businessName = lead.dba_name || lead.customer_full_name || 'Unknown business';
-  const contact = lead.customer_full_name && lead.dba_name
-    ? lead.customer_full_name
-    : null;
-  const step = leadStepLabel(lead.current_step);
+  const businessName = lead.dba_name || lead.legal_business_name || lead.customer_full_name || 'Unknown business';
+  const contactName  = (lead.dba_name || lead.legal_business_name) ? lead.customer_full_name : null;
+  const step         = leadStepLabel(lead.current_step);
+  const stale        = isStale(lead.last_activity_at);
+  const staleDaysAgo = stale ? staleDays(lead.last_activity_at) : 0;
   const lastActivity = lead.last_activity_at
     ? formatRelativeTime(lead.last_activity_at)
-    : lead.created_at
-      ? formatRelativeTime(lead.created_at)
-      : null;
-
-  const LEADS_PORTAL_URL = 'https://distributorleads.netlify.app';
+    : lead.created_at ? formatRelativeTime(lead.created_at) : null;
 
   return (
     <li className="bg-page-50 border border-page-200 rounded overflow-hidden hover:border-emerald-300 transition-colors">
-      {/* Summary row — always visible */}
+      {/* Summary row */}
       <button
         onClick={onToggle}
         className="w-full text-left px-3 md:px-4 py-3 flex items-start justify-between gap-3"
       >
         <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2 flex-wrap mb-0.5">
+          <div className="flex items-center gap-1.5 flex-wrap mb-1">
             <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium
                              bg-emerald-100 text-emerald-800">
               {step}
             </span>
+            {stale && (
+              <span className="inline-flex items-center gap-0.5 px-2 py-0.5 rounded text-[11px]
+                               font-medium bg-amber-100 text-amber-700">
+                ⚠ {staleDaysAgo}d idle
+              </span>
+            )}
             {lead.tradeshow_lead && (
               <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium
-                               bg-amber-100 text-amber-800">
+                               bg-blue-100 text-blue-700">
                 Tradeshow
               </span>
             )}
           </div>
           <p className="text-sm font-medium text-slate-900 truncate">{businessName}</p>
-          {contact && (
-            <p className="text-xs text-slate-500 truncate">{contact}</p>
+          <div className="flex items-center gap-2 flex-wrap mt-0.5">
+            {contactName && <span className="text-xs text-slate-500 truncate">{contactName}</span>}
+            {lead.customer_interest && (
+              <span className="text-xs text-slate-400 truncate">{lead.customer_interest}</span>
+            )}
+          </div>
+          {lead.jotform_submission_id && (
+            <p className="text-[11px] font-mono text-slate-400 mt-0.5">HTH: {lead.jotform_submission_id}</p>
           )}
         </div>
         <div className="flex items-center gap-3 flex-shrink-0">
@@ -421,9 +666,7 @@ function LeadRow({ lead, expanded, onToggle, onConvert }) {
             <span className="text-xs text-slate-400 hidden md:inline">{lastActivity}</span>
           )}
           <svg
-            className={`w-4 h-4 text-slate-400 transition-transform ${
-              expanded ? 'rotate-180' : ''
-            }`}
+            className={`w-4 h-4 text-slate-400 transition-transform ${expanded ? 'rotate-180' : ''}`}
             fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
           >
             <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
@@ -431,28 +674,20 @@ function LeadRow({ lead, expanded, onToggle, onConvert }) {
         </div>
       </button>
 
-      {/* Expanded detail — read-only */}
+      {/* Expanded detail */}
       {expanded && (
         <div className="border-t border-page-200 px-3 md:px-4 py-3 bg-white">
           <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 text-sm mb-4">
             {lead.contact_email && (
               <>
                 <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Email</dt>
-                <dd className="text-slate-800">
-                  <a href={`mailto:${lead.contact_email}`} className="hover:underline text-navy-800">
-                    {lead.contact_email}
-                  </a>
-                </dd>
+                <dd><a href={`mailto:${lead.contact_email}`} className="hover:underline text-navy-800">{lead.contact_email}</a></dd>
               </>
             )}
-            {lead.phone && (
+            {(lead.phone || lead.contact_number) && (
               <>
                 <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Phone</dt>
-                <dd className="text-slate-800">
-                  <a href={`tel:${lead.phone}`} className="hover:underline text-navy-800">
-                    {lead.phone}
-                  </a>
-                </dd>
+                <dd><a href={`tel:${lead.phone || lead.contact_number}`} className="hover:underline text-navy-800">{lead.phone || lead.contact_number}</a></dd>
               </>
             )}
             {lead.store_address && (
@@ -469,8 +704,20 @@ function LeadRow({ lead, expanded, onToggle, onConvert }) {
             )}
             {lead.program_source && (
               <>
-                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Source</dt>
+                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Program source</dt>
                 <dd className="text-slate-800">{lead.program_source}</dd>
+              </>
+            )}
+            {lead.distributor && (
+              <>
+                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Distributor</dt>
+                <dd className="text-slate-800">{lead.distributor}</dd>
+              </>
+            )}
+            {lead.beverage_needs && (
+              <>
+                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Beverage needs</dt>
+                <dd className="text-slate-800">{lead.beverage_needs}</dd>
               </>
             )}
             {lastActivity && (
@@ -490,7 +737,7 @@ function LeadRow({ lead, expanded, onToggle, onConvert }) {
               Convert to Deal
             </button>
             <a
-              href={`${LEADS_PORTAL_URL}#/leads/${lead.id}`}
+              href={`${LEADS_PORTAL_URL}/?lead=${lead.id}`}
               target="_blank"
               rel="noopener noreferrer"
               className="px-3 py-2 text-sm text-slate-600 hover:text-navy-900
@@ -502,6 +749,55 @@ function LeadRow({ lead, expanded, onToggle, onConvert }) {
         </div>
       )}
     </li>
+  );
+}
+
+/* ───────────────────────── Convert-to-deal modal ───────────────────────── */
+
+function ConvertLeadModal({ lead, converting, error, onCancel, onConfirm }) {
+  const businessName = lead.dba_name || lead.legal_business_name || lead.customer_full_name || 'this lead';
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
+        <h2 className="text-base font-semibold text-slate-900 mb-1">Convert to Deal</h2>
+        <p className="text-sm text-slate-600 mb-4">
+          This will create a new deal for <strong>{businessName}</strong> and mark
+          the lead as won. The rep can then add equipment and submit a quote.
+        </p>
+
+        <div className="bg-page-50 border border-page-200 rounded p-3 mb-4 text-xs text-slate-600 space-y-1">
+          {lead.contact_email && <div><span className="font-medium">Email:</span> {lead.contact_email}</div>}
+          {(lead.phone || lead.contact_number) && <div><span className="font-medium">Phone:</span> {lead.phone || lead.contact_number}</div>}
+          {lead.program_source && <div><span className="font-medium">Program:</span> {lead.program_source}</div>}
+          {lead.jotform_submission_id && <div className="font-mono">HTH: {lead.jotform_submission_id}</div>}
+        </div>
+
+        {error && (
+          <div className="text-sm text-bad p-3 bg-red-50 border border-red-200 rounded mb-4">
+            {error}
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2">
+          <button
+            onClick={onCancel}
+            disabled={converting}
+            className="px-4 py-2 text-sm text-slate-600 hover:text-navy-900 border border-page-200
+                       hover:border-navy-300 rounded transition-colors disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={converting}
+            className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm
+                       font-medium rounded transition-colors disabled:opacity-60"
+          >
+            {converting ? 'Converting…' : 'Confirm Convert'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
