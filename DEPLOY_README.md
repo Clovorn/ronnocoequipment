@@ -1,137 +1,67 @@
-# Ronnoco Deal Builder — COMPLETE deploy package
+# Ronnoco Deal Builder — lead card with Call button
 
-This ZIP is a **drop-in replacement for the entire repo** at
-github.com/Clovorn/ronnocoequipment. It contains:
+Lead cards on My Deals → Distributor Leads now have a dedicated **Call
+button** on the right side of each card. Tapping the button dials the
+customer directly without expanding the card. The contact name and
+email are still on the left side.
 
-  1. v33.5 "lead conversion creates a DRAFT" fix — applied to the
-     correct `src/` paths (the paths Vite actually builds from)
-  2. Cleanup of orphan duplicate folders at the repo root
-     (`/components/`, `/lib/`, `/help/`, `/App.jsx`) — these were
-     never built by Vite but were intercepting every "deploy v33.5"
-     attempt
-  3. Removal of stale delivery ZIPs from the repo root
-  4. Everything else from your current production repo, unchanged
+## What changed
 
-Built locally with `npm install && npm run build` — clean, 126
-modules, no warnings.
+Compared to the prior release (which had a small inline phone link):
 
-## What was broken and why every prior deploy failed
+  - The phone link moved out of the left column and became a prominent
+    green button on the right side of the card, sized for fingers
+    (44px tall tap target)
+  - On desktop/tablet the button shows the phone icon + full number
+  - On mobile the button collapses to just the phone icon (to leave
+    room for the customer name and email)
+  - The email link stays inline on the left (most reps call first; if
+    they want to email instead it's still right there)
+  - Tap-handling is unchanged: tapping the button dials, tapping
+    anywhere else on the card still expands it
 
-The live app loads `/src/main.jsx` (per `index.html`), so Vite
-builds from `src/`. But the repo also had `/components/`,
-`/lib/`, `/help/`, and `/App.jsx` sitting at the **root** —
-leftover orphans from an older project structure, never imported by
-anything. Every prior v33.5 deploy attempt extracted the patch ZIP
-to the repo root, which created `/components/MyDealsPage.jsx` (in
-the orphan folder) instead of overwriting `/src/components/MyDealsPage.jsx`
-(the real one). The live bundle kept building the pre-v33.5 code.
+## Edge cases
 
-This ZIP fixes that for good by deleting the orphan folders entirely.
+- If the lead has no phone number, the Call button is hidden — the
+  card layout just shows the chevron on the right as before
+- If the lead has no contact name, the button's accessibility label
+  falls back to "Call [business name] at [phone]"
+- Keyboard accessibility: Tab focuses the call button independently
+  of the card, with a visible green focus ring
 
-## What v33.5 actually changes
+## Deploy
 
-Old convert flow (pre-v33.5, still live as of this writing):
+The only file that changes is:
 
-  Convert → writes a row to the pipeline `deals` table → stamps
-  the lead as `won`. Deal appears on the Pipeline Dashboard
-  immediately. If anyone deletes it from the dashboard, it's gone
-  forever AND the lead is frozen in `won` status, invisible to both
-  the leads queue and the rep.
+    src/components/MyDealsPage.jsx
 
-New convert flow (v33.5):
+**Recommended deploy: edit the file directly in GitHub's web UI.**
+ZIP uploads keep landing in the repo as binary blobs without being
+extracted; the file-edit path is the only one that has worked
+reliably.
 
-  Convert → creates a row in `deal_drafts` (catalog Supabase) →
-  marks the lead as `in_progress` → opens Deal Builder with the
-  draft loaded. The deal is NOT written to the pipeline yet.
+  1. Navigate to src/components/MyDealsPage.jsx on GitHub
+  2. Click the pencil "Edit" icon
+  3. Select all in the editor (Cmd-A / Ctrl-A) → Delete
+  4. Open MyDealsPage.jsx from this delivery in any text editor
+  5. Select all → Copy → Paste into the GitHub editor
+  6. Commit straight to main
 
-  Submit (in Deal Builder) → NOW writes to the pipeline `deals`
-  table → flips the lead from `in_progress` to `won`.
+Netlify rebuilds in ~2 min. Hard-refresh the live app (Cmd-Shift-R)
+to clear the service-worker cache and load the new bundle.
 
-  Delete draft → reverts the lead back to `active` so it reappears
-  in the rep's queue.
+## Verification
 
-## Deploy instructions
+  1. Log in, go to My Deals → Distributor Leads
+  2. Each lead card with a phone number on file shows a green Call
+     button on the right
+  3. Tap (or click) the button → dialer or Skype opens to the
+     customer's number
+  4. Tap anywhere else on the card → it still expands normally
+  5. Keyboard: Tab onto the card → Tab onto the Call button (focus
+     ring visible) → Enter to call
 
-### Option A — replace the whole repo via GitHub web UI (recommended)
+## Build verified locally
 
-1. Extract this ZIP locally. You'll get a folder of files.
-2. Open github.com/Clovorn/ronnocoequipment in your browser.
-3. Delete the following from the repo root (use the trash icon on
-   each, or do it locally):
-     - `components/` folder
-     - `lib/` folder
-     - `help/` folder
-     - `App.jsx`
-     - all `ronnoco-*.zip` files
-     - `v33_5-extract-to-repo-root.zip`
-4. Upload the contents of this ZIP via "Add file → Upload files".
-   Drag the whole extracted folder in; let it overwrite existing
-   files when prompted.
-5. Write a commit message ("v33.5 deploy + repo cleanup") and commit
-   directly to `main`.
-6. Netlify auto-rebuilds in ~2 min.
-
-### Option B — local git push
-
-If you have a local clone of the repo:
-
-```bash
-cd ronnocoequipment
-git pull origin main
-git rm -r components/ lib/ help/
-git rm App.jsx
-git rm ronnoco-*.zip v33_5-extract-to-repo-root.zip
-# Now copy contents of this ZIP on top of your repo
-cp -r <extracted-zip-folder>/* .
-git add -A
-git commit -m "v33.5 deploy: lead convert creates draft + remove orphan folders"
-git push origin main
-```
-
-## Verification after Netlify rebuild
-
-1. Open the live app, hard-refresh (Cmd-Shift-R / Ctrl-Shift-R).
-2. View source — bundle filename should change. The clean build
-   I ran locally produced `index-CbRAyeVE.js`; Netlify should
-   produce the same hash if it built from this exact source.
-3. Convert a test lead (or Island Oasis #4, which is back in
-   `status='active'`):
-     - You land in **Deal Builder**, NOT the Pipeline Dashboard
-     - The Pipeline Dashboard does NOT show the deal yet
-     - In My Deals → Drafts, the new draft appears
-4. Submit the draft from Deal Builder:
-     - The deal now appears on the Pipeline Dashboard
-     - The lead flips from `in_progress` to `won`
-     - `lead.deal_id` updates from the draft id to the real
-       pipeline UUID
-5. Test the revert path on another test lead:
-     - Convert it → draft created
-     - Delete the draft from My Deals → confirm dialog warns the
-       lead will return to active
-     - Lead reappears in the rep's Distributor Leads queue
-
-## State of the world right now (before this deploy)
-
-- **Island Oasis #4** — `status='active'`, in Will Simms's queue.
-  DO NOT click Convert on this until the new build is live, or the
-  buggy pre-v33.5 code will run one more time.
-- **The Dam Store** — `status='active'`, in Will's queue. Same
-  warning.
-- Activity log on the leads portal has audit rows for both reverts.
-
-## Known followups (not blocking)
-
-1. **Soft-delete on pipeline `deals`** — root cause of why a stray
-   delete in the dashboard was permanent. Add `deleted_at` column +
-   filter in dashboard queries.
-2. **Tighten pipeline Supabase RLS** — anon role still has full
-   CRUD on `deals`; should restrict.
-3. **README hygiene** — 16 `README_vXX.md` files at the repo root
-   are getting unwieldy. Consider moving to `docs/`.
-
-## Database migration status
-
-The migration adding `'in_progress'` to the leads `status` CHECK
-constraint was already applied to project `opnpyunbccifkdnbljsz`
-when v33.5 was originally prepared. No additional migrations are
-needed for this deploy.
+Builds clean with `npm install && npm run build` on Vite 5.4:
+126 modules, no warnings, bundle hash `index-BxnGvZkP.js`.
