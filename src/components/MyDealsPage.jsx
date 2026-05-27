@@ -1,21 +1,20 @@
 import { useEffect, useState } from 'react';
-import { listMyDrafts, deleteDraft, renameDraft } from '../lib/draftStorage.js';
+import { listMyDrafts, deleteDraft, renameDraft, insertDraft, defaultDraftName } from '../lib/draftStorage.js';
 import {
   fetchMyDeals,
   fetchDealById,
   recordCustomerDecision,
   resubmitDeal,
   isDealPipelineConfigured,
-  submitDealToPipeline,
-  logDealActivity,
 } from '../lib/dealPipeline.js';
 import { DECISIONS, getStepStatuses, isTerminalDenial, PHASE_LABELS, STEP_LABELS } from '../lib/pipelineSteps.js';
 import DealDetailView from './DealDetailView.jsx';
 import {
   fetchMyLeads, isLeadsPortalConfigured, leadStepLabel, bucketLeads,
-  leadToDealPayload, stampLeadConverted, logLeadActivity,
+  leadToDraftState, markLeadInProgress, revertLeadToActive, logLeadActivity,
   logRepContact, markLeadLost, fetchLeadActivity,
 } from '../lib/leadsPortal.js';
+import { useDirector } from '../lib/useDirector.js';
 
 /**
  * MyDealsPage — the rep's personal workspace.
@@ -74,6 +73,14 @@ export default function MyDealsPage({ profile, session, navigate }) {
   const [convertTarget, setConvertTarget] = useState(null);    // lead row being converted
   const [converting, setConverting] = useState(false);
   const [convertError, setConvertError] = useState(null);
+  // v33.2: deal type chosen in the convert modal. Drives phase routing
+  // (see leadToDealPayload). Resets when the modal opens/closes.
+  const [convertDealType, setConvertDealType] = useState('');
+
+  // v33.2: the rep's assigned director, needed when converting a lead as
+  // 'Loan Equipment' (lands in pending_director and needs rep_director_email
+  // stamped so the director's My Team queue picks it up).
+  const { director: myDirector } = useDirector();
 
   /* ─── v31 resubmit modal state ─── */
   // When non-null, the resubmit modal is open and pointing at this deal row.
@@ -213,11 +220,56 @@ export default function MyDealsPage({ profile, session, navigate }) {
    *   4. Log activity on both sides
    *   5. Navigate to My Deals so the rep sees their new deal
    */
+  /**
+   * v33.4: Convert a lead into a Deal Builder DRAFT (not a pipeline deals row).
+   *
+   * Why: a converted lead is still a deal-in-progress. The rep needs to add
+   * equipment, terms, install dates, etc., before it should be visible to the
+   * leasing/sales/ops pipeline. Pre-v33.4 we inserted a deals row immediately,
+   * which made the deal appear in the Pipeline Dashboard's "Submitted" column
+   * before any actual work was done — confusing for directors and for the rep.
+   *
+   * Flow:
+   *   1. Duplicate check — has this lead already been converted?
+   *      a) A draft with _fromLeadId = lead.id exists in deal_drafts, OR
+   *      b) A deals row with jotform_submission_id = lead.jotform_submission_id
+   *         exists in the pipeline (caught for safety even though the new flow
+   *         won't create one until Submit).
+   *   2. Build draft_state from the lead + chosen deal type.
+   *   3. INSERT into deal_drafts (catalog DB, RLS-scoped to the rep).
+   *   4. Stamp the lead as won with deal_id = draft.id as a placeholder.
+   *      When the rep later clicks Submit in Deal Builder, that handler
+   *      overwrites the lead's deal_id with the real deals.id (see the
+   *      stampLeadConverted call in DealBuilder's submit path).
+   *   5. Log activity on both sides.
+   *   6. Navigate the rep straight to #/deal?draft=<id> so they land in the
+   *      Builder ready to add equipment — they're mid-flow, the convert click
+   *      shouldn't force a "now go find your draft" step.
+   */
   async function handleConvertLead(lead) {
     setConvertError(null);
     setConverting(true);
     try {
-      // Step 1 — duplicate check
+      // ── Step 1 — duplicate check ────────────────────────────────────────
+      // 1a. Already a draft? (the new common case)
+      const { data: existingDrafts } = await supabaseSafeRpc(async () => {
+        const { supabase } = await import('../lib/supabase.js');
+        return supabase
+          .from('deal_drafts')
+          .select('id, draft_name')
+          .filter('draft_state->>_fromLeadId', 'eq', lead.id)
+          .limit(1);
+      });
+      if (existingDrafts && existingDrafts.length > 0) {
+        const existing = existingDrafts[0];
+        setConvertError(
+          `This lead is already a draft ("${existing.draft_name}"). ` +
+          `Open it from the Drafts tab to continue.`
+        );
+        setConverting(false);
+        return;
+      }
+      // 1b. Already a submitted deal? (legacy data + safety net)
       if (lead.jotform_submission_id) {
         const { data: existing } = await import('../lib/dealPipeline.js').then(m =>
           m.dealPipeline
@@ -229,79 +281,159 @@ export default function MyDealsPage({ profile, session, navigate }) {
         );
         if (existing?.id) {
           setConvertError(
-            `This lead is already a deal (ID: ${existing.id.slice(0, 8)}…). ` +
-            `Check My Deals or the Pipeline Dashboard.`
+            `This lead is already a submitted deal (ID: ${existing.id.slice(0, 8)}…). ` +
+            `Check the Submissions tab or the Pipeline Dashboard.`
           );
           setConverting(false);
           return;
         }
       }
 
-      // Step 2 — create deal in pipeline DB
-      const payload = leadToDealPayload(lead);
-      const { data: newDeal, error: dealError } = await submitDealToPipeline(payload);
-      if (dealError || !newDeal) {
-        setConvertError(`Couldn’t create deal: ${dealError?.message || 'Unknown error'}`);
+      // ── Step 2 — build draft state ──────────────────────────────────────
+      const draftState = leadToDraftState(lead, convertDealType);
+      // Sensible default name so the Drafts list reads naturally.
+      const storeName = draftState.store_name?.trim();
+      const draftName = storeName
+        ? `${storeName} — from lead`
+        : defaultDraftName(draftState);
+
+      // ── Step 3 — insert draft ───────────────────────────────────────────
+      // submit_mode default: Loan deals can't be quoted (isQuoteable === false),
+      // so seed them in 'deal' mode. Everything else seeds in 'quote' to match
+      // the typical workflow (rep usually sends a quote first).
+      const submitMode = convertDealType === 'Loan Equipment' ? 'deal' : 'quote';
+      const { data: newDraft, error: draftError } = await insertDraft({
+        userId:         session?.user?.id,
+        email:          session?.user?.email || '',
+        submitMode,
+        draft:          draftState,
+        equipmentItems: [],          // rep adds equipment in the Builder
+        draftName,
+      });
+      if (draftError || !newDraft) {
+        setConvertError(`Couldn't create draft: ${draftError?.message || 'Unknown error'}`);
         setConverting(false);
         return;
       }
 
-      // Step 3 — stamp lead (best-effort; don’t fail conversion if this fails)
-      const { error: stampError } = await stampLeadConverted(lead.id, newDeal.id);
+      // ── Step 4 — mark lead in_progress (best-effort) ───────────────────
+      // We store the draft id in lead.deal_id as a placeholder, and switch
+      // status to 'in_progress' so the lead disappears from the rep's
+      // active leads queue (which filters by status='active'). The real
+      // deals.id and status='won' will be stamped when DealBuilder submits
+      // (see DealBuilder.restampLeadIfFromLead).
+      //
+      // If the rep later deletes the draft before submitting, we revert
+      // the lead to 'active' so it reappears in their queue (see the
+      // draft-delete handler below).
+      const { error: stampError } = await markLeadInProgress(lead.id, newDraft.id);
       if (stampError) {
-        // Deal created but lead not stamped. Warn the rep but don’t undo.
+        // Draft created, lead not stamped. Warn but don't undo — the rep
+        // can still find the draft in their Drafts tab. The lead will
+        // still appear in their active leads list, which means they could
+        // convert it twice; admin should keep an eye out.
         setConvertError(
-          `Deal created (${newDeal.id.slice(0, 8)}…) but couldn’t update the lead record. ` +
-          `Please manually mark this lead as won in the Leads Portal.`
+          `Draft created ("${newDraft.draft_name}") but couldn't mark the lead ` +
+          `as in-progress. The lead may still appear in your active leads list.`
         );
-        // Still fall through to log + navigate
+        // Continue — don't return.
       }
 
-      // Step 4 — activity logs (both best-effort)
+      // ── Step 5 — activity logs (best-effort) ───────────────────────────
+      // logLeadActivity signature: (leadId, actorRole, action, fromStep, toStep, note)
       await logLeadActivity(
         lead.id,
         'ronnoco_rep',
-        'Converted to deal in Deal Builder',
+        `Converted to Deal Builder draft (${convertDealType})`,
         lead.current_step,
-        `Deal ID: ${newDeal.id}`
-      );
-      await logDealActivity(
-        newDeal.id,
-        `Created from distributor lead ${
-          lead.jotform_submission_id || lead.id.slice(0, 8)
-        }`,
         null,
-        profile?.display_name || session?.user?.email || 'rep'
+        `Draft ID: ${newDraft.id}`
       );
 
-      // Step 5 — remove lead from local list + close modal + navigate
+      // ── Step 6 — refresh drafts list + navigate ────────────────────────
+      // Pull the fresh draft list so the count badge on the Drafts tab is
+      // accurate when the rep eventually navigates back.
+      const { data: refreshedDrafts } = await listMyDrafts();
+      if (refreshedDrafts) setDrafts(refreshedDrafts);
+
+      // Drop the lead from the in-memory leads list (it's now WON in the
+      // portal and won't come back on next fetch anyway).
       setLeads((prev) => prev.filter((l) => l.id !== lead.id));
+
+      // Close the modal cleanly.
       setConvertTarget(null);
+      setConvertDealType('');
       setConverting(false);
 
-      // Refresh submissions so the new deal appears immediately
-      const { data: updatedDeals } = await import('../lib/dealPipeline.js').then(m =>
-        m.fetchMyDeals(session?.user?.email)
-      );
-      if (updatedDeals) setSubmissions(updatedDeals);
-
-      navigate('my-deals');
+      // Send the rep straight into the Deal Builder, draft pre-loaded. They
+      // were in convert flow → most natural next step is to keep building.
+      navigate('deal', { draftId: newDraft.id });
     } catch (err) {
       setConvertError(`Unexpected error: ${err.message}`);
       setConverting(false);
     }
   }
 
+  // Small wrapper used by the duplicate-check step. The supabase client lives
+  // in a module-level singleton; wrapping the import in a function lets us
+  // tolerate it not being configured (returns {data:null} silently rather
+  // than throwing — the duplicate check just won't fire and we'll insert).
+  async function supabaseSafeRpc(fn) {
+    try {
+      const { data } = await fn();
+      return { data };
+    } catch (err) {
+      console.warn('Duplicate check skipped:', err.message);
+      return { data: null };
+    }
+  }
+
   async function handleDelete(draft) {
+    // v33.5: if this draft was created by converting a Distributor Lead, the
+    // lead is currently parked in status='in_progress'. Surface that in the
+    // confirm dialog so the rep knows the lead will come back to their queue.
+    const fromLeadId = draft.draft_state?._fromLeadId || null;
     const ok = window.confirm(
-      `Delete draft "${draft.draft_name}"? This can't be undone.`
+      fromLeadId
+        ? `Delete draft "${draft.draft_name}"?\n\n` +
+          `This lead will return to your active leads list so you can re-convert ` +
+          `or mark it lost later.`
+        : `Delete draft "${draft.draft_name}"? This can't be undone.`
     );
     if (!ok) return;
+
     const { error } = await deleteDraft(draft.id);
     if (error) {
       window.alert(`Could not delete: ${error.message}`);
       return;
     }
+
+    // v33.5: revert the parked lead so the rep can find it again.
+    // Best-effort: failure leaves the lead stuck in 'in_progress', which the
+    // rep can resolve by re-creating a draft via Convert or by an admin
+    // bumping the lead's status manually. We log a warning but don't block.
+    if (fromLeadId) {
+      try {
+        const { error: revertErr } = await revertLeadToActive(fromLeadId);
+        if (revertErr) console.warn('Could not revert lead to active:', revertErr);
+        await logLeadActivity(
+          fromLeadId,
+          'ronnoco_rep',
+          'Deal Builder draft deleted; lead returned to active',
+          null,
+          null,
+          `Deleted draft: ${draft.draft_name}`
+        );
+        // Re-fetch leads so the rep sees the lead reappear immediately.
+        if (profile?.display_name && isLeadsPortalConfigured) {
+          const { data: refreshed } = await fetchMyLeads(profile.display_name);
+          if (refreshed) setLeads(refreshed);
+        }
+      } catch (err) {
+        console.warn('Lead revert failed unexpectedly:', err);
+      }
+    }
+
     // Optimistic local removal — re-fetching would be heavier and the row
     // is already gone from the DB.
     setDrafts((prev) => prev.filter((d) => d.id !== draft.id));
@@ -491,7 +623,11 @@ export default function MyDealsPage({ profile, session, navigate }) {
           onStageFilterChange={setLeadsStageFilter}
           expandedLeadId={expandedLeadId}
           onToggleExpand={(id) => setExpandedLeadId((prev) => (prev === id ? null : id))}
-          onConvert={(lead) => { setConvertError(null); setConvertTarget(lead); }}
+          onConvert={(lead) => {
+            setConvertError(null);
+            setConvertDealType('');
+            setConvertTarget(lead);
+          }}
           onLeadUpdated={handleLeadUpdated}
         />
       )}
@@ -531,7 +667,14 @@ export default function MyDealsPage({ profile, session, navigate }) {
           lead={convertTarget}
           converting={converting}
           error={convertError}
-          onCancel={() => { setConvertTarget(null); setConvertError(null); }}
+          dealType={convertDealType}
+          onDealTypeChange={setConvertDealType}
+          hasDirector={!!myDirector?.director_email}
+          onCancel={() => {
+            setConvertTarget(null);
+            setConvertError(null);
+            setConvertDealType('');
+          }}
           onConfirm={() => handleConvertLead(convertTarget)}
         />
       )}
@@ -978,14 +1121,19 @@ function LeadDetailPanel({ lead, onConvert, onLeadUpdated }) {
           Made actual contact (not just voicemail)
         </label>
 
-        {/* Note textarea */}
+        {/* Note textarea — required so every action has a recorded response */}
+        <label className="block text-xs font-medium text-slate-700 mb-1">
+          Notes <span className="text-bad">*</span>
+          <span className="ml-1 text-slate-500 font-normal">— describe what happened on this contact</span>
+        </label>
         <textarea
-          rows={2}
+          rows={3}
           value={note}
           onChange={(e) => setNote(e.target.value)}
-          placeholder="Describe what happened…"
+          placeholder="What was discussed, decided, or attempted? Required for every action."
           className="w-full text-sm border border-emerald-200 rounded px-3 py-2 mb-2
                      placeholder-slate-400 focus:outline-none focus:border-emerald-500 resize-none"
+          aria-required="true"
         />
 
         {logError && (
@@ -997,9 +1145,11 @@ function LeadDetailPanel({ lead, onConvert, onLeadUpdated }) {
 
         <button
           onClick={handleLogContact}
-          disabled={logging}
+          disabled={logging || !note.trim()}
+          title={!note.trim() ? 'Add a note before logging' : undefined}
           className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm
-                     font-medium rounded transition-colors disabled:opacity-60"
+                     font-medium rounded transition-colors
+                     disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-emerald-700"
         >
           {logging ? 'Saving…' : 'Log contact'}
         </button>
@@ -1054,30 +1204,39 @@ function LeadDetailPanel({ lead, onConvert, onLeadUpdated }) {
             Mark as lost
           </button>
         ) : (
-          <div className="w-full mt-2 flex items-center gap-2">
-            <input
-              type="text"
-              value={lostReason}
-              onChange={(e) => setLostReason(e.target.value)}
-              placeholder="Reason for loss…"
-              className="flex-1 text-sm border border-red-200 rounded px-3 py-1.5
-                         placeholder-slate-400 focus:outline-none focus:border-red-400"
-            />
-            <button
-              onClick={handleMarkLost}
-              disabled={markingLost}
-              className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs
-                         font-medium rounded transition-colors disabled:opacity-60"
-            >
-              {markingLost ? 'Saving…' : 'Confirm'}
-            </button>
-            <button
-              onClick={() => { setShowLostForm(false); setLostReason(''); }}
-              className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700
-                         border border-page-200 rounded transition-colors"
-            >
-              Cancel
-            </button>
+          <div className="w-full mt-2">
+            <label className="block text-xs font-medium text-slate-700 mb-1">
+              Reason for loss <span className="text-bad">*</span>
+              <span className="ml-1 text-slate-500 font-normal">— required, kept in the lead's history</span>
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                type="text"
+                value={lostReason}
+                onChange={(e) => setLostReason(e.target.value)}
+                placeholder="Why is this lead lost? (price, customer went elsewhere, no answer after N tries…)"
+                className="flex-1 text-sm border border-red-200 rounded px-3 py-1.5
+                           placeholder-slate-400 focus:outline-none focus:border-red-400"
+                aria-required="true"
+              />
+              <button
+                onClick={handleMarkLost}
+                disabled={markingLost || !lostReason.trim()}
+                title={!lostReason.trim() ? 'Add a reason before confirming' : undefined}
+                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white text-xs
+                           font-medium rounded transition-colors
+                           disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-red-600"
+              >
+                {markingLost ? 'Saving…' : 'Confirm'}
+              </button>
+              <button
+                onClick={() => { setShowLostForm(false); setLostReason(''); }}
+                className="px-3 py-1.5 text-xs text-slate-500 hover:text-slate-700
+                           border border-page-200 rounded transition-colors"
+              >
+                Cancel
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -1087,15 +1246,68 @@ function LeadDetailPanel({ lead, onConvert, onLeadUpdated }) {
 
 /* ───────────────────────── Convert-to-deal modal ───────────────────────── */
 
-function ConvertLeadModal({ lead, converting, error, onCancel, onConfirm }) {
+/**
+ * v33.4: Converting a lead creates a Deal Builder DRAFT, not a pipeline deals
+ * row. The draft is pre-filled with the lead's customer info + the chosen
+ * deal type, and lands in the rep's Drafts tab. Nothing reaches the Pipeline
+ * Dashboard until the rep finishes filling out the draft and clicks Submit
+ * in Deal Builder.
+ *
+ * The deal type the rep picks here drives:
+ *   - Which submit modes are available (Loan can't be quoted → submit_mode='deal')
+ *   - The phase routing applied at Submit time (handled inside DealBuilder)
+ *
+ * "Confirm Convert" is disabled until a type is picked. If the rep picks
+ * Loan but has no director assigned, we warn them — Loan deals will need
+ * director approval after submission, and without an assigned director the
+ * eventual submitted deal won't surface in any director's queue.
+ */
+const CONVERT_DEAL_TYPES = [
+  {
+    value: 'Lease Equipment',
+    label: 'Lease',
+    blurb: 'Customer leases the equipment. Routes to the leasing pipeline on submit.',
+  },
+  {
+    value: 'Finance Equipment',
+    label: 'Finance',
+    blurb: 'Customer finances the equipment. Routes to the leasing pipeline on submit.',
+  },
+  {
+    value: 'Purchase Equipment',
+    label: 'Purchase',
+    blurb: 'Customer buys outright. Routes to sales on submit; rep can send a quote first.',
+  },
+  {
+    value: 'Loan Equipment',
+    label: 'Loan',
+    blurb: 'Ronnoco lends the equipment. Routes to director review on submit.',
+  },
+];
+
+function ConvertLeadModal({
+  lead,
+  converting,
+  error,
+  dealType,
+  onDealTypeChange,
+  hasDirector,
+  onCancel,
+  onConfirm,
+}) {
   const businessName = lead.dba_name || lead.legal_business_name || lead.customer_full_name || 'this lead';
+  const isLoan = dealType === 'Loan Equipment';
+  const showDirectorWarning = isLoan && !hasDirector;
+  const canConfirm = !!dealType && !converting;
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40">
-      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5">
+      <div className="bg-white rounded-lg shadow-xl w-full max-w-md p-5 max-h-[90vh] overflow-y-auto">
         <h2 className="text-base font-semibold text-slate-900 mb-1">Convert to Deal</h2>
         <p className="text-sm text-slate-600 mb-4">
-          This will create a new deal for <strong>{businessName}</strong> and mark
-          the lead as won. The rep can then add equipment and submit a quote.
+          Creates a new draft for <strong>{businessName}</strong> with the customer
+          info pre-filled. You'll land in the Deal Builder to add equipment and
+          finalize details before submitting.
         </p>
 
         <div className="bg-page-50 border border-page-200 rounded p-3 mb-4 text-xs text-slate-600 space-y-1">
@@ -1104,6 +1316,50 @@ function ConvertLeadModal({ lead, converting, error, onCancel, onConfirm }) {
           {lead.program_source && <div><span className="font-medium">Program:</span> {lead.program_source}</div>}
           {lead.jotform_submission_id && <div className="font-mono">HTH: {lead.jotform_submission_id}</div>}
         </div>
+
+        {/* Deal type picker — required */}
+        <div className="mb-4">
+          <label className="block text-xs font-medium text-slate-700 uppercase tracking-wider mb-2">
+            Deal type <span className="text-bad">*</span>
+          </label>
+          <div className="space-y-1.5">
+            {CONVERT_DEAL_TYPES.map((opt) => {
+              const checked = dealType === opt.value;
+              return (
+                <label
+                  key={opt.value}
+                  className={`flex items-start gap-2.5 p-2.5 border rounded cursor-pointer transition-colors
+                    ${checked
+                      ? 'border-navy-500 bg-navy-50'
+                      : 'border-page-200 hover:border-page-300 hover:bg-page-50'}`}
+                >
+                  <input
+                    type="radio"
+                    name="convert-deal-type"
+                    value={opt.value}
+                    checked={checked}
+                    onChange={() => onDealTypeChange(opt.value)}
+                    disabled={converting}
+                    className="mt-0.5"
+                  />
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-slate-900">{opt.label}</div>
+                    <div className="text-xs text-slate-500 mt-0.5">{opt.blurb}</div>
+                  </div>
+                </label>
+              );
+            })}
+          </div>
+        </div>
+
+        {showDirectorWarning && (
+          <div className="text-xs text-amber-900 p-3 bg-amber-50 border border-amber-200 rounded mb-4">
+            <strong>Heads up:</strong> Loan deals need director approval after submission.
+            No director is currently assigned to you, so once you submit this draft it
+            won't reach a director's queue until an admin assigns one in{' '}
+            <span className="font-mono">Admin → Users</span>.
+          </div>
+        )}
 
         {error && (
           <div className="text-sm text-bad p-3 bg-red-50 border border-red-200 rounded mb-4">
@@ -1122,9 +1378,11 @@ function ConvertLeadModal({ lead, converting, error, onCancel, onConfirm }) {
           </button>
           <button
             onClick={onConfirm}
-            disabled={converting}
+            disabled={!canConfirm}
             className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm
-                       font-medium rounded transition-colors disabled:opacity-60"
+                       font-medium rounded transition-colors disabled:opacity-60
+                       disabled:cursor-not-allowed"
+            title={!dealType ? 'Pick a deal type first' : undefined}
           >
             {converting ? 'Converting…' : 'Confirm Convert'}
           </button>
@@ -1371,6 +1629,10 @@ function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision, onRes
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2 mb-1 flex-wrap">
               <TypePill isQuote={isQuote} />
+              {/* v33.3: deal type badge — Lease / Finance / Purchase / Loan.
+                  Renders null when deal_type is missing (legacy deals from
+                  before v33.2 lead conversion, or older Jotform imports). */}
+              <DealTypePill dealType={row.deal_type} />
               {isQuote && row.quote_number && (
                 <span className="text-[11px] font-mono font-medium text-slate-700">
                   {row.quote_number}
@@ -1998,6 +2260,40 @@ function TypePill({ isQuote }) {
                        ? 'bg-accent-500/15 text-accent-700'
                        : 'bg-navy-900 text-chalk-50'}`}>
       {isQuote ? 'Quote' : 'Deal'}
+    </span>
+  );
+}
+
+/**
+ * v33.3: DealTypePill — the deal_type badge on submission rows.
+ *
+ * Renders null when deal_type isn't set, so it's invisible on pre-v33.2 deals
+ * and on rows where the type was never specified. Each of the four canonical
+ * types gets its own subtle tint so reps can scan a list and spot all the
+ * Purchases, all the Loans, etc. at a glance.
+ *
+ * Style choices:
+ *   - Navy   for Lease    (the most common path; reads as the "default")
+ *   - Navy-light for Finance (sibling to Lease, visually paired)
+ *   - Accent for Purchase (highest-margin path; the differentiator)
+ *   - Slate  for Loan     (Ronnoco-owned; internal-only, low-key)
+ *
+ * Unknown types fall through to a neutral pill so future deal_type values
+ * (or anything custom on legacy data) render without crashing.
+ */
+function DealTypePill({ dealType }) {
+  if (!dealType) return null;
+  const styled = {
+    'Lease Equipment':    { label: 'Lease',    cls: 'bg-navy-100 text-navy-800' },
+    'Finance Equipment':  { label: 'Finance',  cls: 'bg-navy-50 text-navy-700' },
+    'Purchase Equipment': { label: 'Purchase', cls: 'bg-accent-500/15 text-accent-700' },
+    'Loan Equipment':     { label: 'Loan',     cls: 'bg-slate-200 text-slate-700' },
+  }[dealType] || { label: dealType, cls: 'bg-page-100 text-slate-600' };
+
+  return (
+    <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] uppercase tracking-wider font-medium ${styled.cls}`}
+          title={`Deal type: ${dealType}`}>
+      {styled.label}
     </span>
   );
 }

@@ -6,6 +6,11 @@ import {
 } from '../lib/dealPipeline.js';
 import { isQuoteable } from '../lib/pipelineSteps.js';
 import { fetchDraft, insertDraft, updateDraft, deleteDraft, defaultDraftName } from '../lib/draftStorage.js';
+// v33.4: when submitting a draft that was converted from a Distributor Lead,
+// re-stamp the lead's deal_id with the real deals.id (overwriting the draft id
+// placeholder set at convert time). Also log activity on the lead so the leads
+// portal has a record of the submission moment.
+import { stampLeadConverted, logLeadActivity } from '../lib/leadsPortal.js';
 import { LEASE_MIN_PRICE, LEASE_RATE } from '../lib/leasing.js';
 import { useLookupList } from '../lib/useLookupList.js';
 import { useFieldRequirements, validateAgainstRequirements, fieldMetaFor } from '../lib/useFieldRequirements.js';
@@ -642,7 +647,15 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
 
   const eqSummary = useMemo(() => summarizeEquipment(equipmentItems), [equipmentItems]);
   const dealTotal = eqSummary.total;
-  const qualifiesForFinance = dealTotal >= LEASE_MIN_PRICE;
+  // v27.1 bug fix — in bundle mode the lease/finance floor must be checked
+  // against the bundle's leaseBasis (hardware + soft cost + service reserve),
+  // NOT the raw equipment list-price total. A bundle's whole point is that
+  // the customer is buying a financed package whose basis exceeds the bare
+  // hardware. Without this, items under $5K that ship as part of a valid
+  // bundle were tripping the LEASE_MIN_PRICE gate and the Submit button
+  // stayed disabled even though bundlePricing.eligible was true.
+  const financeBasis = (bundleMode && bundlePricing) ? bundlePricing.leaseBasis : dealTotal;
+  const qualifiesForFinance = financeBasis >= LEASE_MIN_PRICE;
   const monthlyEstimate = qualifiesForFinance ? dealTotal * LEASE_RATE : null;
 
   const isIndirect       = draft.distribution_method === 'Indirect (Distributor)';
@@ -922,6 +935,43 @@ ${repName}`;
     return true;
   }
 
+  /**
+   * v33.4: When a draft was created by converting a Distributor Lead, the
+   * lead's `deal_id` column was stamped with the draft id as a placeholder
+   * (so the leads portal knows the lead has been "claimed"). Once the draft
+   * is actually submitted and a real deals row exists, swap that placeholder
+   * for the real deals.id so external joins/queries against the leads portal
+   * resolve to the live deal.
+   *
+   * The _fromLeadId is stashed in the draft form state at convert time
+   * (see leadToDraftState in leadsPortal.js). If the field isn't present,
+   * this is a no-op — applies only to lead-converted drafts.
+   *
+   * All operations are best-effort: if either the stamp or the activity
+   * log fails, the submitted deal is already in the pipeline so the rep's
+   * primary action succeeded. We just warn in the console.
+   */
+  async function restampLeadIfFromLead(realDealId) {
+    const leadId = draft._fromLeadId;
+    if (!leadId || !realDealId) return;
+    try {
+      const { error: stampError } = await stampLeadConverted(leadId, realDealId);
+      if (stampError) {
+        console.warn('Could not re-stamp lead with submitted deal id:', stampError);
+      }
+      await logLeadActivity(
+        leadId,
+        'ronnoco_rep',
+        'Deal submitted from converted lead',
+        null,
+        null,
+        `Deal ID: ${realDealId}`
+      );
+    } catch (err) {
+      console.warn('Lead re-stamp failed unexpectedly:', err);
+    }
+  }
+
   async function submitDeal() {
     setError(null);
     const validationError = validate('deal');
@@ -985,6 +1035,10 @@ ${repName}`;
         console.warn('Bundle snapshot failed; deal exists in pipeline without bundle row.');
       }
     }
+
+    // v33.4: if this deal was converted from a Distributor Lead, replace the
+    // placeholder draft_id stamp on the lead with the real deal_id.
+    await restampLeadIfFromLead(deal.id);
 
     // Draft → done. Best-effort delete: if it fails, the deal still exists
     // in the pipeline so the rep's primary action succeeded. The orphan draft
@@ -1078,6 +1132,9 @@ ${repName}`;
         console.warn('Bundle snapshot failed on quote; quote exists without bundle row.');
       }
     }
+
+    // v33.4: re-stamp the lead with the real deal id (was draft id placeholder).
+    await restampLeadIfFromLead(deal.id);
 
     // Same as direct-deal: draft → quote means the draft has served its
     // purpose. Best-effort delete; if it fails the rep can clean up later.

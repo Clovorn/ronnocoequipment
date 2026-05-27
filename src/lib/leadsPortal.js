@@ -60,11 +60,55 @@ export async function fetchMyLeads(repName) {
 
 /**
  * Stamp a converted lead: set deal_id + status='won'.
+ *
+ * Called by DealBuilder's submit success path (v33.5). Pre-v33.5 this was
+ * called at convert time, but that marked leads as won before the deal was
+ * actually in the pipeline. Now the rep flow is:
+ *
+ *   1. Convert lead   → markLeadInProgress(lead, draft.id)    status='in_progress'
+ *   2. Submit deal    → stampLeadConverted(lead, deals.id)    status='won'
+ *   3. Delete draft   → revertLeadToActive(lead)              status='active'  (undoes step 1)
  */
 export async function stampLeadConverted(leadId, dealId) {
   const { error } = await leadsPortal
     .from('leads')
     .update({ deal_id: dealId, status: 'won' })
+    .eq('id', leadId);
+  return { error };
+}
+
+/**
+ * v33.5: Mark a lead as "claimed by a rep, in progress." Sets the lead's
+ * status to 'in_progress' so it disappears from the rep's active leads
+ * queue (the workspace filters by status='active') without yet committing
+ * to "won." Stores the Deal Builder draft id in lead.deal_id as a soft
+ * placeholder — gets overwritten by the real pipeline deals.id when the
+ * draft is eventually submitted (see stampLeadConverted above).
+ *
+ * Safe to call repeatedly — idempotent for the same (lead, draft) pair.
+ */
+export async function markLeadInProgress(leadId, draftId) {
+  const { error } = await leadsPortal
+    .from('leads')
+    .update({ deal_id: draftId, status: 'in_progress' })
+    .eq('id', leadId);
+  return { error };
+}
+
+/**
+ * v33.5: Revert a lead back to the active queue. Called when a rep deletes
+ * the Deal Builder draft that was created from a converted lead — the rep
+ * is effectively cancelling the conversion, so the lead should reappear in
+ * their leads list so they can either re-convert later or mark it lost.
+ *
+ * Clears deal_id (the draft id was a placeholder) and resets status='active'.
+ * The leads portal will continue to filter by assigned_sales_rep so it'll
+ * show up on the same rep's screen.
+ */
+export async function revertLeadToActive(leadId) {
+  const { error } = await leadsPortal
+    .from('leads')
+    .update({ deal_id: null, status: 'active' })
     .eq('id', leadId);
   return { error };
 }
@@ -209,10 +253,45 @@ export const PROGRAM_SOURCE_TO_DISTRIBUTOR = {
 };
 
 /**
- * Build a deals-table insert payload from a lead row.
- * Matches the field mapping from the spec + the column names in dealPipeline.js.
+ * Build a `deal_drafts.draft_state` object from a lead row.
+ *
+ * v33.4: Lead conversion no longer creates a deals row directly. Instead it
+ * creates a deal_drafts entry that the rep opens in Deal Builder, completes
+ * (equipment, terms, install dates, etc.), and submits like any other deal.
+ * The new deal lands in the pipeline ONLY when the rep clicks Submit — keeping
+ * unfinished deals out of the Pipeline Dashboard and out of the director's
+ * approval queue.
+ *
+ * What this returns:
+ *   - Just the customer-facing fields a lead actually carries. The rest of
+ *     the form (deal type, equipment, install dates, terms) gets filled out
+ *     by the rep in Deal Builder.
+ *   - `deal_type` IS included so the rep doesn't have to re-pick it. The
+ *     convert modal asked for it; we carry that through into the draft.
+ *   - `_fromLeadId` is stashed so DealBuilder can stamp the lead with the
+ *     deal_id once Submit finally creates a deals row.
+ *
+ * What this deliberately does NOT include:
+ *   - phase / current_step / is_quote / deal_status: those are pipeline-row
+ *     concepts that only exist after Submit. Drafts don't have a phase.
+ *   - sales_rep_email / rep_director_email: the rep's session stamps these
+ *     at submit time via DealBuilder's existing payload builder. Putting them
+ *     in draft_state would be redundant and risk drift if the rep changes.
+ *
+ * Field mapping (lead column → draft_state field):
+ *   dba_name              → store_name
+ *   legal_business_name   → legal_business_name
+ *   customer_first/last   → contact_first_name / contact_last_name
+ *   contact_email         → contact_email
+ *   phone | contact_number→ contact_cell
+ *   store_address         → address
+ *   program_source        → parent_distributor (mapped via PROGRAM_SOURCE_TO_DISTRIBUTOR)
+ *   distributor_warehouse → distributor_warehouse
+ *   distributor_sales_rep → distributor_rep_name
+ *   customer_distributor_number → distributor_customer_num
+ *   beverage_needs + notes → notes (joined with blank lines)
  */
-export function leadToDealPayload(lead) {
+export function leadToDraftState(lead, dealType = '') {
   const firstName = lead.customer_first_name
     || (lead.customer_full_name || '').split(/\s+/)[0]
     || '';
@@ -223,23 +302,30 @@ export function leadToDealPayload(lead) {
   const notesParts = [lead.beverage_needs, lead.notes].filter(Boolean);
 
   return {
-    sales_rep:                lead.assigned_sales_rep || '',
-    first_name:               firstName,
-    last_name:                lastName,
-    email:                    lead.contact_email || '',
-    phone:                    lead.phone || lead.contact_number || '',
+    // Store / business
     store_name:               lead.dba_name || '',
     legal_business_name:      lead.legal_business_name || '',
     address:                  lead.store_address || '',
-    jotform_submission_id:    lead.jotform_submission_id || null,
+    // Primary contact
+    contact_first_name:       firstName,
+    contact_last_name:        lastName,
+    contact_cell:             lead.phone || lead.contact_number || '',
+    contact_email:            lead.contact_email || '',
+    // Distributor info
     parent_distributor:       PROGRAM_SOURCE_TO_DISTRIBUTOR[lead.program_source]
                                 || lead.program_source || '',
-    notes:                    notesParts.join('\n\n'),
-    is_new_customer:          true,
-    current_step:             'submitted',
-    phase:                    'leasing',
     distributor_warehouse:    lead.distributor_warehouse || '',
     distributor_customer_num: lead.customer_distributor_number || '',
     distributor_rep_name:     lead.distributor_sales_rep || '',
+    // Deal type chosen in the convert modal
+    deal_type:                dealType || '',
+    // Carry the rep's notes from the leads portal
+    notes:                    notesParts.join('\n\n'),
+    // v33.4: lead linkage. DealBuilder consumes this on submit to stamp
+    // the lead's deal_id with the newly-created pipeline deals row id.
+    _fromLeadId:              lead.id || null,
+    // Display only — store the jotform id so we know which lead this draft
+    // came from even if _fromLeadId becomes inconsistent.
+    _fromJotformSubmissionId: lead.jotform_submission_id || null,
   };
 }

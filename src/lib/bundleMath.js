@@ -44,7 +44,13 @@ function roundHalfUp(n) {
  * Math:
  *   target_lease_basis = target_monthly_fee / lease_rate
  *   reserve = target_lease_basis - default_hardware - default_hardware × soft_cost_pct
- *   reserve = max(reserve, reserve_floor)   ← floored at the policy minimum ($1,080)
+ *   reserve = max(reserve, reserve_floor)
+ *
+ * v27.2 policy: reserveFloor defaults to 0 (not the old $1,080). The reserve
+ * back-solves to hit the marketing number exactly, and we only protect
+ * against a negative reserve. A negative result means the bundle's target
+ * is too low for its default hardware — admin should raise the target or
+ * trim the default load. `wasNegative` surfaces that in BundlesAdmin.
  *
  * Returns:
  *   {
@@ -64,7 +70,7 @@ export function calibrateBundleReserve({
   leaseRate = 0.0395,
   softCostPct = 0.25,
   defaultHardware = 0,
-  reserveFloor = 1080,
+  reserveFloor = 0,
 } = {}) {
   if (targetMonthlyFee == null || !Number.isFinite(Number(targetMonthlyFee))) return null;
   const target = Number(targetMonthlyFee);
@@ -74,10 +80,13 @@ export function calibrateBundleReserve({
   const softCost = numberOr(defaultHardware, 0) * numberOr(softCostPct, 0.25);
   const raw = targetLeaseBasis - numberOr(defaultHardware, 0) - softCost;
 
+  // numberOr falls back to its second arg ONLY when the first is non-finite.
+  // We want reserveFloor = 0 to be a valid, honored value, so use ?? not numberOr.
+  const floor = Number.isFinite(Number(reserveFloor)) ? Number(reserveFloor) : 0;
   const wasNegative = raw < 0;
-  const floored = Math.max(raw, numberOr(reserveFloor, 1080));
-  const wasFloored = raw < numberOr(reserveFloor, 1080) && !wasNegative;
-  const shortfall = wasFloored ? (numberOr(reserveFloor, 1080) - raw) : 0;
+  const floored = Math.max(raw, floor);
+  const wasFloored = raw < floor && !wasNegative;
+  const shortfall = wasFloored ? (floor - raw) : 0;
 
   return {
     reserve: floored,
@@ -133,7 +142,7 @@ export function calculateBundlePricing({ bundle, equipment, defaultEquipment = n
       leaseRate,
       softCostPct,
       defaultHardware,
-      reserveFloor: 1080,
+      reserveFloor: 0, // v27.2: hit marketing target exactly; only protect against negative
     });
     if (calibration) serviceReserve = calibration.reserve;
   }
@@ -142,7 +151,16 @@ export function calculateBundlePricing({ bundle, equipment, defaultEquipment = n
   const reserve     = serviceReserve;
   const leaseBasis  = hardware + softCost + reserve;
   const monthlyRaw  = leaseBasis * leaseRate;
-  const monthlyCharged = roundHalfUp(monthlyRaw);
+  const monthlyComputed = roundHalfUp(monthlyRaw);
+  // v27.1 — customer_monthly is the HIGHER of (a) the math-derived monthly
+  // and (b) the bundle's target_monthly_fee. When defaultEquipment + target
+  // are both supplied, the back-solved reserve makes these equal at default
+  // load; substitutions or add-ons can push monthlyComputed above target.
+  // When defaultEquipment is NOT supplied (legacy path or thin config), the
+  // computed monthly can come in below the target and we floor it. This
+  // matches the rep direction: snapshot/pipeline uses whichever is higher.
+  const targetNum = Number.isFinite(target) ? Number(target) : 0;
+  const monthlyCharged = Math.max(monthlyComputed, targetNum);
 
   const eligible = leaseBasis >= LEASE_MIN_PRICE;
   const eligibilityShortfall = eligible ? 0 : (LEASE_MIN_PRICE - leaseBasis);
