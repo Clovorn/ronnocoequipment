@@ -44,6 +44,10 @@ function parseRoute(hash) {
                                   draftId:     query.get('draft')  || null,
                                   editQuoteId: query.get('edit')   || null,
                                   bundleId:    query.get('bundle') || null,
+                                  // leadData is never serialised into the URL — it is
+                                  // passed via the navigate() call in-memory only and
+                                  // will be null when the page is parsed from the hash.
+                                  leadData:    null,
                                 } };
     case 'my-deals':   return { name: 'my-deals',   params: {} };   // rep's own drafts + submissions
     case 'my-team':    return { name: 'my-team',    params: {} };   // director's approval queue (v31)
@@ -109,11 +113,20 @@ export function useRouter() {
 
   const navigate = useCallback((name, params) => {
     const target = routeToHash(name, params);
+    // leadData (and any other in-memory-only params) must be preserved when
+    // setting the route state directly, since they are never serialised into
+    // the URL hash and would be lost if we only relied on parseRoute().
+    const parsed = parseRoute(target);
+    if (params?.leadData) parsed.params.leadData = params.leadData;
     if (window.location.hash !== target) {
+      // Setting the hash fires hashchange which calls setRoute via the
+      // listener — but that listener calls parseRoute which loses leadData.
+      // So we set the route state directly here first, then update the hash.
+      setRoute(parsed);
       window.location.hash = target;
     } else {
       // Re-fire even on same-route navigation so click-on-active-tab feels responsive
-      setRoute(parseRoute(target));
+      setRoute(parsed);
     }
   }, []);
 

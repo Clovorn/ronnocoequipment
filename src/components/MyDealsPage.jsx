@@ -9,6 +9,7 @@ import {
 } from '../lib/dealPipeline.js';
 import { DECISIONS, getStepStatuses, isTerminalDenial, PHASE_LABELS, STEP_LABELS } from '../lib/pipelineSteps.js';
 import DealDetailView from './DealDetailView.jsx';
+import { fetchMyLeads, isLeadsPortalConfigured, leadStepLabel } from '../lib/leadsPortal.js';
 
 /**
  * MyDealsPage — the rep's personal workspace.
@@ -56,6 +57,12 @@ export default function MyDealsPage({ profile, session, navigate }) {
   // a time — clicking another row closes the previous one. null = none open.
   const [expandedId, setExpandedId] = useState(null);
 
+  /* ─── My Leads state ─── */
+  const [leads, setLeads] = useState([]);
+  const [leadsLoading, setLeadsLoading] = useState(true);
+  const [leadsError, setLeadsError] = useState(null);
+  const [expandedLeadId, setExpandedLeadId] = useState(null);
+
   /* ─── v31 resubmit modal state ─── */
   // When non-null, the resubmit modal is open and pointing at this deal row.
   // The modal collects optional notes from the rep (e.g. "fixed the address
@@ -90,8 +97,26 @@ export default function MyDealsPage({ profile, session, navigate }) {
         setSubmissions(data);
         setSubmissionsLoading(false);
       });
+
+    // Leads from the Distributor Leads portal — matched by rep display name.
+    // Only fetched for sales / non-admin roles; admins and directors see the
+    // full pipeline via their own views so we don't clutter their workspace.
+    const repName = profile?.display_name;
+    if (repName && isLeadsPortalConfigured) {
+      setLeadsLoading(true);
+      fetchMyLeads(repName)
+        .then(({ data, error }) => {
+          if (cancelled) return;
+          if (error) setLeadsError(error.message);
+          setLeads(data ?? []);
+          setLeadsLoading(false);
+        });
+    } else {
+      setLeadsLoading(false);
+    }
+
     return () => { cancelled = true; };
-  }, [session?.user?.email]);
+  }, [session?.user?.email, profile?.display_name]);
 
   /**
    * Refresh a single submission row in place — used after the rep records a
@@ -244,6 +269,18 @@ export default function MyDealsPage({ profile, session, navigate }) {
         </p>
       </div>
 
+      {/* ─── My Leads (from Distributor Leads portal) ─── */}
+      {isLeadsPortalConfigured && (
+        <MyLeadsSection
+          leads={leads}
+          loading={leadsLoading}
+          error={leadsError}
+          expandedLeadId={expandedLeadId}
+          onToggleExpand={(id) => setExpandedLeadId((prev) => (prev === id ? null : id))}
+          onConvert={(lead) => navigate('deal', { leadData: lead })}
+        />
+      )}
+
       {/* ─── Drafts ─── */}
       <DraftsSection
         drafts={drafts}
@@ -283,6 +320,188 @@ export default function MyDealsPage({ profile, session, navigate }) {
         />
       )}
     </div>
+  );
+}
+
+/* ───────────────────────── My Leads section ───────────────────────── */
+
+/**
+ * Shows unconverted leads from the Distributor Leads portal that are
+ * assigned to the logged-in rep. Each card is clickable to expand a
+ * read-only detail view, with a "Convert to Deal" CTA.
+ */
+function MyLeadsSection({ leads, loading, error, expandedLeadId, onToggleExpand, onConvert }) {
+  // Don't render the section at all if there are no leads and we're not loading —
+  // it keeps the workspace clean for reps who have no portal leads.
+  if (!loading && !error && leads.length === 0) return null;
+
+  return (
+    <section className="bg-white border border-page-200 rounded-lg overflow-hidden mb-4">
+      <header className="bg-emerald-800 text-white px-4 md:px-5 py-3 flex items-center justify-between gap-3">
+        <h2 className="text-sm md:text-base font-medium flex items-center gap-2">
+          <svg className="w-4 h-4 opacity-80" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+          My Leads
+          {!loading && leads.length > 0 && (
+            <span className="ml-1 text-xs font-normal text-emerald-200">
+              {leads.length} active
+            </span>
+          )}
+        </h2>
+        <span className="text-xs text-emerald-200 font-normal">From Distributor Leads portal</span>
+      </header>
+
+      <div className="p-4 md:p-5">
+        {loading ? (
+          <div className="text-sm text-slate-500 py-4 text-center">Loading leads…</div>
+        ) : error ? (
+          <div className="text-sm text-bad p-3 bg-red-50 border border-red-200 rounded">
+            Couldn’t load leads: {error}
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {leads.map((lead) => (
+              <LeadRow
+                key={lead.id}
+                lead={lead}
+                expanded={expandedLeadId === lead.id}
+                onToggle={() => onToggleExpand(lead.id)}
+                onConvert={() => onConvert(lead)}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function LeadRow({ lead, expanded, onToggle, onConvert }) {
+  const businessName = lead.dba_name || lead.customer_full_name || 'Unknown business';
+  const contact = lead.customer_full_name && lead.dba_name
+    ? lead.customer_full_name
+    : null;
+  const step = leadStepLabel(lead.current_step);
+  const lastActivity = lead.last_activity_at
+    ? formatRelativeTime(lead.last_activity_at)
+    : lead.created_at
+      ? formatRelativeTime(lead.created_at)
+      : null;
+
+  const LEADS_PORTAL_URL = 'https://distributorleads.netlify.app';
+
+  return (
+    <li className="bg-page-50 border border-page-200 rounded overflow-hidden hover:border-emerald-300 transition-colors">
+      {/* Summary row — always visible */}
+      <button
+        onClick={onToggle}
+        className="w-full text-left px-3 md:px-4 py-3 flex items-start justify-between gap-3"
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap mb-0.5">
+            <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium
+                             bg-emerald-100 text-emerald-800">
+              {step}
+            </span>
+            {lead.tradeshow_lead && (
+              <span className="inline-flex items-center px-2 py-0.5 rounded text-[11px] font-medium
+                               bg-amber-100 text-amber-800">
+                Tradeshow
+              </span>
+            )}
+          </div>
+          <p className="text-sm font-medium text-slate-900 truncate">{businessName}</p>
+          {contact && (
+            <p className="text-xs text-slate-500 truncate">{contact}</p>
+          )}
+        </div>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {lastActivity && (
+            <span className="text-xs text-slate-400 hidden md:inline">{lastActivity}</span>
+          )}
+          <svg
+            className={`w-4 h-4 text-slate-400 transition-transform ${
+              expanded ? 'rotate-180' : ''
+            }`}
+            fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"
+          >
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+          </svg>
+        </div>
+      </button>
+
+      {/* Expanded detail — read-only */}
+      {expanded && (
+        <div className="border-t border-page-200 px-3 md:px-4 py-3 bg-white">
+          <dl className="grid grid-cols-1 md:grid-cols-2 gap-x-6 gap-y-2 text-sm mb-4">
+            {lead.contact_email && (
+              <>
+                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Email</dt>
+                <dd className="text-slate-800">
+                  <a href={`mailto:${lead.contact_email}`} className="hover:underline text-navy-800">
+                    {lead.contact_email}
+                  </a>
+                </dd>
+              </>
+            )}
+            {lead.phone && (
+              <>
+                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Phone</dt>
+                <dd className="text-slate-800">
+                  <a href={`tel:${lead.phone}`} className="hover:underline text-navy-800">
+                    {lead.phone}
+                  </a>
+                </dd>
+              </>
+            )}
+            {lead.store_address && (
+              <>
+                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Address</dt>
+                <dd className="text-slate-800">{lead.store_address}</dd>
+              </>
+            )}
+            {lead.customer_interest && (
+              <>
+                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Interest</dt>
+                <dd className="text-slate-800">{lead.customer_interest}</dd>
+              </>
+            )}
+            {lead.program_source && (
+              <>
+                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Source</dt>
+                <dd className="text-slate-800">{lead.program_source}</dd>
+              </>
+            )}
+            {lastActivity && (
+              <>
+                <dt className="text-xs text-slate-500 font-medium uppercase tracking-wide">Last activity</dt>
+                <dd className="text-slate-800">{lastActivity}</dd>
+              </>
+            )}
+          </dl>
+
+          <div className="flex items-center gap-2 flex-wrap">
+            <button
+              onClick={onConvert}
+              className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 text-white text-sm
+                         font-medium rounded transition-colors"
+            >
+              Convert to Deal
+            </button>
+            <a
+              href={`${LEADS_PORTAL_URL}#/leads/${lead.id}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-2 text-sm text-slate-600 hover:text-navy-900
+                         border border-page-200 hover:border-navy-300 rounded transition-colors"
+            >
+              Open in Leads Portal ↗
+            </a>
+          </div>
+        </div>
+      )}
+    </li>
   );
 }
 

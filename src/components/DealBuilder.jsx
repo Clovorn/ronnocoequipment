@@ -249,8 +249,26 @@ function hydrateFromPipelineDeal(row, profile, session) {
 
 /* ───────────────────────── Main component ───────────────────────── */
 
-export default function DealBuilder({ profile, session, navigate, draftId = null, editQuoteId = null, bundleId = null }) {
-  const [draft, setDraft] = useState(() => makeBlankDraft(profile, session));
+export default function DealBuilder({ profile, session, navigate, draftId = null, editQuoteId = null, bundleId = null, leadData = null }) {
+  const [draft, setDraft] = useState(() => {
+    const blank = makeBlankDraft(profile, session);
+    if (leadData) {
+      // Pre-fill customer fields from a Distributor Leads portal lead.
+      // The rep can edit everything before submitting.
+      return {
+        ...blank,
+        store_name:        leadData.dba_name || '',
+        contact_email:     leadData.contact_email || '',
+        contact_cell:      leadData.phone || '',
+        address:           leadData.store_address || '',
+        notes:             leadData.customer_interest
+                             ? `Lead interest: ${leadData.customer_interest}`
+                             : '',
+        _fromLeadId:       leadData.id || null,   // stashed for post-submit conversion stamp
+      };
+    }
+    return blank;
+  });
   const [equipmentItems, setEquipmentItems] = useState([]);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -1798,8 +1816,9 @@ ${repName}`;
       </Section>
 
       {/* ─── Section: Primary Contact ─── */}
-      {/* First/last name + email are needed in both modes — quote mode needs the
-          email so mailto: has a recipient. Cell phone is deal-only. */}
+      {/* First/last name + email are needed in both modes. Contact cell phone
+          is admin-controlled via field_requirements and may be used in quote
+          mode as well. */}
       <Section title="Primary Contact">
         <FieldGrid cols={2}>
           <TextField label="Contact First Name" required value={draft.contact_first_name} onChange={(v) => update('contact_first_name', v)} placeholder="First name" />

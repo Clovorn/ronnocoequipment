@@ -152,6 +152,7 @@ export default function App() {
           draftId={route.params.draftId}
           editQuoteId={route.params.editQuoteId}
           bundleId={route.params.bundleId}
+          leadData={route.params.leadData ?? null}
         />
       )}
 
