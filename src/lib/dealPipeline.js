@@ -70,6 +70,14 @@ export async function generateQuoteNumber() {
  *
  * Returns a *limited* projection — only fields safe to show the customer.
  * Internal info (cost, ROM, distributor details, internal notes) is omitted.
+ *
+ * Note (May 2026): we used to also gate on is_quote=true here, which made
+ * the URL die the moment a customer decision was recorded — a separate bug
+ * where decisions flipped is_quote to false. That root cause is now fixed
+ * (see recordCustomerDecision), but we also drop the is_quote check here
+ * as defense-in-depth: the unguessable token is the real access boundary,
+ * and direct-submit deals never get a quote_number anyway, so this can't
+ * accidentally expose a non-quote.
  */
 export async function fetchQuoteForCustomer(quoteNumber, token) {
   if (!dealPipeline) return { data: null, error: { message: 'Deal pipeline not configured.' } };
@@ -91,7 +99,6 @@ export async function fetchQuoteForCustomer(quoteNumber, token) {
     `)
     .eq('quote_number', quoteNumber)
     .eq('quote_token', token)
-    .eq('is_quote', true)
     .maybeSingle();
 
   return { data, error };
@@ -294,7 +301,7 @@ export async function logDealRevision({ dealId, revision, changedBy, changeKind,
  * (MyDealsPage) doesn't have to coordinate them:
  *
  *   1. UPDATE deals SET customer_decision, customer_decision_at,
- *      customer_decision_notes, phase, current_step, is_quote=false,
+ *      customer_decision_notes, phase, current_step,
  *      deal_status (closed if declined)
  *   2. INSERT deal_revisions row (change_kind='decision', diff has from/to)
  *   3. INSERT deal_activity row (human-readable for the dashboard's activity feed)
@@ -302,11 +309,16 @@ export async function logDealRevision({ dealId, revision, changedBy, changeKind,
  * The `decision` arg is one of the DECISIONS entries from pipelineSteps.js —
  * its nextPhase/nextStep/closed fields drive the column updates.
  *
- * Note that `is_quote` flips to false here: once the customer has decided,
- * this row is no longer a "quote pending response" — it's a deal moving
- * through the pipeline. The customer-facing quote URL still works (it
- * matches on quote_number + quote_token without checking is_quote), so
- * the customer can still see what they decided on.
+ * Bug fix (May 2026): we used to also flip `is_quote` to false here on the
+ * theory that "once the customer responds, this row stops being a quote." In
+ * practice that broke the customer-facing URL (fetchQuoteForCustomer requires
+ * is_quote=true to return a row) and the rep's edit/re-send button
+ * (DealBuilder also gates on is_quote). Both should keep working after a
+ * decision — the customer should be able to revisit what they agreed to, and
+ * the rep should be able to re-send if needed. `customer_decision` and
+ * `phase`/`current_step` already track the workflow forward; `is_quote` is
+ * a stable semantic flag ("this row entered the system as a quote") and is
+ * now left alone after creation.
  */
 export async function recordCustomerDecision({ dealId, decision, notes, actor, currentRevision }) {
   if (!dealPipeline) {
@@ -315,11 +327,13 @@ export async function recordCustomerDecision({ dealId, decision, notes, actor, c
   const now = new Date().toISOString();
 
   // Build the column patch from the decision spec.
+  // NOTE: is_quote intentionally NOT in this patch — see the bug-fix comment
+  // on the function. The row stays is_quote=true so the customer URL and the
+  // rep's resend flow both continue to work after the decision.
   const patch = {
     customer_decision: decision.value,
     customer_decision_at: now,
     customer_decision_notes: notes || null,
-    is_quote: false,        // no longer a pending quote
     updated_at: now,
   };
   if (decision.nextPhase) {

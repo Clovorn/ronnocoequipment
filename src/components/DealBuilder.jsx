@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   submitDealToPipeline, logDealActivity, isDealPipelineConfigured, generateQuoteNumber,
   fetchDealById, updateQuote, logDealRevision,
@@ -336,6 +336,19 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
   const [error, setError] = useState(null);
   const [successInfo, setSuccessInfo] = useState(null);
 
+  // Auto-scroll the error banner into view when one appears. The banner
+  // renders below the submit buttons; on a long form (which this is), the
+  // rep taps Submit and the error appears off-screen — they see no visible
+  // change and report "button does nothing." Multiple reps have hit this.
+  // Smooth-scroll the banner into view as soon as it renders so the error
+  // is always visible.
+  const errorRef = useRef(null);
+  useEffect(() => {
+    if (error && errorRef.current) {
+      errorRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  }, [error]);
+
   /**
    * submitMode — which lifecycle the rep is currently building toward.
    *
@@ -499,15 +512,28 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
           setHydrating(false);
           return;
         }
-        // Sanity check — only quotes should be editable from this path.
-        // A direct-submit deal hitting this code path means the rep followed
-        // a stale ?edit=<id> link (e.g. from an old browser tab or bookmark)
-        // for a deal that has since moved past the quote stage. We give a
-        // tailored message per phase so the rep knows where the deal lives
-        // now and can navigate to the right place instead of staring at a
-        // generic refusal.
-        if (!data.is_quote) {
+        // Sanity check — only quotes still awaiting a customer response are
+        // editable from this path. A row that has moved past the sales phase
+        // (e.g. into leasing, ops, pending_director) OR whose customer has
+        // already recorded a decision shouldn't be re-edited here — that
+        // would silently skip the workflow that already advanced.
+        //
+        // Bug-fix history (May 2026): this used to gate on `!data.is_quote`
+        // because the older recordCustomerDecision flipped is_quote to false
+        // on a decision. That coupling broke the customer-facing URL (which
+        // also required is_quote=true), so the flip was removed. The edit
+        // block now checks phase/customer_decision directly, which is what
+        // it was always trying to express.
+        const customerHasDecided =
+          data.customer_decision && data.customer_decision !== 'pending';
+        const phaseAdvanced = data.phase && data.phase !== 'sales';
+        const directSubmitDeal = data.is_quote === false; // legacy: pre-fix deals
+        if (customerHasDecided || phaseAdvanced || directSubmitDeal) {
           let msg = "This deal isn't a quote and can't be edited from here.";
+          if (customerHasDecided) {
+            const decisionLabel = data.customer_decision;
+            msg = `The customer already recorded a decision (${decisionLabel}) on this quote. Open it from My Deals to see what they chose, or start a new quote if you need to re-engage.`;
+          }
           // v31: director-approval phases have their own narrative.
           if (data.phase === 'pending_director' && data.director_decision === 'rejected') {
             msg = 'This deal was rejected by the director. Open it from My Deals to revise and resubmit — editing here would skip that flow.';
@@ -1073,76 +1099,71 @@ ${repName}`;
     }
     setSubmitting(true);
 
-    // v32 routing fix: direct-submit Purchase and Loan deals require director
-    // approval before they can proceed to operations. Lease and Finance deals
-    // continue to route into the leasing phase as before. This branch
-    // mirrors what happens after a customer accepts a quote with
-    // decision='purchase' or 'loan' — both flows funnel through director
-    // review when bypassing the customer-quote step.
-    //
-    // Pre-v32 behavior was a hardcoded phase='leasing' here, which meant
-    // 100% of direct-submit Loan deals (Loans are never quoted) were
-    // silently misrouted and never reached the director's queue. Loren
-    // had to manually backfill each one via SQL.
-    //
-    // If the rep has no director assigned (rep_director_email null), we
-    // still route to pending_director but the My Team queue won't find
-    // it — surfaces as a data hygiene issue admins can fix in #/admin/users.
-    const dealType = trimOrNull(draft.deal_type);
-    const needsDirectorApproval = dealType === 'Purchase Equipment' || dealType === 'Loan Equipment';
+    // Defensive wrap: if anything between setSubmitting(true) and the end
+    // throws an unhandled exception, the catch surfaces it as a visible
+    // error and the finally guarantees the button is re-enabled. Without
+    // this, multiple reps hit a silent-failure scenario where the button
+    // appeared to "do nothing" because submitting got stuck true.
+    try {
+      // v32 routing fix: direct-submit Purchase and Loan deals require director
+      // approval before they can proceed to operations. Lease and Finance deals
+      // continue to route into the leasing phase as before.
+      const dealType = trimOrNull(draft.deal_type);
+      const needsDirectorApproval = dealType === 'Purchase Equipment' || dealType === 'Loan Equipment';
 
-    const pipelinePayload = {
-      ...buildBasePayload(),
-      // Direct-deal lifecycle: skips the sales/quote phase entirely.
-      is_quote:              false,
-      current_step:          needsDirectorApproval ? 'awaiting_review' : 'submitted',
-      phase:                 needsDirectorApproval ? 'pending_director' : 'leasing',
-      deal_status:           'active',
-      customer_decision:     'pending',
-    };
+      const pipelinePayload = {
+        ...buildBasePayload(),
+        // Direct-deal lifecycle: skips the sales/quote phase entirely.
+        is_quote:              false,
+        current_step:          needsDirectorApproval ? 'awaiting_review' : 'submitted',
+        phase:                 needsDirectorApproval ? 'pending_director' : 'leasing',
+        deal_status:           'active',
+        customer_decision:     'pending',
+      };
 
-    const { data: deal, error: pipelineError } = await submitDealToPipeline(pipelinePayload);
-    if (pipelineError) {
-      setError(`Submission failed: ${pipelineError.message}`);
-      setSubmitting(false);
-      return;
-    }
-    await logDealActivity(
-      deal.id,
-      'Deal created',
-      `Submitted via Ronnoco Deal Builder (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
-      pipelinePayload.sales_rep
-    );
-
-    // v27: if this is a bundle deal, snapshot the bundle math into deal_bundles.
-    // Best-effort — surfaces a non-blocking warning on failure but the deal
-    // itself is already inserted, so the rep's primary action succeeded.
-    if (bundleMode) {
-      const ok = await persistBundleSnapshot(deal.id);
-      if (!ok) {
-        console.warn('Bundle snapshot failed; deal exists in pipeline without bundle row.');
+      const { data: deal, error: pipelineError } = await submitDealToPipeline(pipelinePayload);
+      if (pipelineError) {
+        setError(`Submission failed: ${pipelineError.message}`);
+        return;
       }
+      await logDealActivity(
+        deal.id,
+        'Deal created',
+        `Submitted via Ronnoco Deal Builder (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
+        pipelinePayload.sales_rep
+      );
+
+      // v27: bundle snapshot for bundle-mode deals.
+      if (bundleMode) {
+        const ok = await persistBundleSnapshot(deal.id);
+        if (!ok) {
+          console.warn('Bundle snapshot failed; deal exists in pipeline without bundle row.');
+        }
+      }
+
+      // v33.4: re-stamp lead if this deal came from a converted Distributor Lead.
+      await restampLeadIfFromLead(deal.id);
+
+      if (currentDraftId) {
+        try { await deleteDraft(currentDraftId); }
+        catch (err) { console.warn('Could not delete draft after submit:', err); }
+      }
+
+      setSuccessInfo({
+        kind: 'deal',
+        dealId: deal.id,
+        customerName: [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' '),
+        storeName: draft.store_name,
+      });
+    } catch (err) {
+      console.error('submitDeal threw:', err);
+      setError(`Something went wrong while submitting the deal: ${err?.message || err}. Please try again, or take a screenshot of the browser console (F12 → Console) and share with your admin so we can fix the root cause.`);
+    } finally {
+      // Guarantees the button is re-enabled regardless of what happened above
+      // — including unhandled exceptions, which previously left the button
+      // permanently stuck.
+      setSubmitting(false);
     }
-
-    // v33.4: if this deal was converted from a Distributor Lead, replace the
-    // placeholder draft_id stamp on the lead with the real deal_id.
-    await restampLeadIfFromLead(deal.id);
-
-    // Draft → done. Best-effort delete: if it fails, the deal still exists
-    // in the pipeline so the rep's primary action succeeded. The orphan draft
-    // can be cleaned up from the workspace.
-    if (currentDraftId) {
-      try { await deleteDraft(currentDraftId); }
-      catch (err) { console.warn('Could not delete draft after submit:', err); }
-    }
-
-    setSuccessInfo({
-      kind: 'deal',
-      dealId: deal.id,
-      customerName: [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' '),
-      storeName: draft.store_name,
-    });
-    setSubmitting(false);
   }
 
   /**
@@ -1164,100 +1185,105 @@ ${repName}`;
 
     setSubmitting(true);
 
-    // 1) Get the next quote number from the DB (atomic)
-    const { data: quoteNumber, error: numberError } = await generateQuoteNumber();
-    if (numberError || !quoteNumber) {
-      setError(`Could not generate quote number: ${numberError?.message || 'unknown error'}`);
-      setSubmitting(false);
-      return;
-    }
-
-    // 2) Generate a random token for the public URL
-    const quoteToken = generateQuoteToken();
-
-    // 3) Determine valid-until: rep's pick or +30 days from today
-    const validUntil = draft.quote_valid_until || (() => {
-      const d = new Date();
-      d.setDate(d.getDate() + 30);
-      return d.toISOString().slice(0, 10);  // YYYY-MM-DD
-    })();
-
-    const now = new Date().toISOString();
-    const pipelinePayload = {
-      ...buildBasePayload(),
-      // Quote-specific lifecycle: starts in phase=sales, step=quoted
-      is_quote:                true,
-      current_step:            'quoted',
-      phase:                   'sales',
-      deal_status:             'active',
-      customer_decision:       'pending',
-      quote_number:            quoteNumber,
-      quote_token:             quoteToken,
-      quote_cover_note:        draft.quote_cover_note?.trim() || null,
-      quote_valid_until:       validUntil,
-      quote_first_sent_at:     now,
-      quote_last_sent_at:      now,
-      quote_revision:          1,
-    };
-
-    const { data: deal, error: pipelineError } = await submitDealToPipeline(pipelinePayload);
-    if (pipelineError) {
-      setError(`Submission failed: ${pipelineError.message}`);
-      setSubmitting(false);
-      return;
-    }
-    await logDealActivity(
-      deal.id,
-      'Quote created',
-      `${quoteNumber} sent to ${draft.contact_email} (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
-      pipelinePayload.sales_rep
-    );
-
-    // v27: bundle snapshot for bundle-mode quotes too.
-    if (bundleMode) {
-      const ok = await persistBundleSnapshot(deal.id);
-      if (!ok) {
-        console.warn('Bundle snapshot failed on quote; quote exists without bundle row.');
+    // Defensive wrap — see submitDeal for rationale.
+    try {
+      // 1) Get the next quote number from the DB (atomic)
+      const { data: quoteNumber, error: numberError } = await generateQuoteNumber();
+      if (numberError || !quoteNumber) {
+        setError(`Could not generate quote number: ${numberError?.message || 'unknown error'}`);
+        return;
       }
+
+      // 2) Generate a random token for the public URL
+      const quoteToken = generateQuoteToken();
+
+      // 3) Determine valid-until: rep's pick or +30 days from today
+      const validUntil = draft.quote_valid_until || (() => {
+        const d = new Date();
+        d.setDate(d.getDate() + 30);
+        return d.toISOString().slice(0, 10);  // YYYY-MM-DD
+      })();
+
+      const now = new Date().toISOString();
+      const pipelinePayload = {
+        ...buildBasePayload(),
+        // Quote-specific lifecycle: starts in phase=sales, step=quoted
+        is_quote:                true,
+        current_step:            'quoted',
+        phase:                   'sales',
+        deal_status:             'active',
+        customer_decision:       'pending',
+        quote_number:            quoteNumber,
+        quote_token:             quoteToken,
+        quote_cover_note:        draft.quote_cover_note?.trim() || null,
+        quote_valid_until:       validUntil,
+        quote_first_sent_at:     now,
+        quote_last_sent_at:      now,
+        quote_revision:          1,
+      };
+
+      const { data: deal, error: pipelineError } = await submitDealToPipeline(pipelinePayload);
+      if (pipelineError) {
+        setError(`Submission failed: ${pipelineError.message}`);
+        return;
+      }
+      await logDealActivity(
+        deal.id,
+        'Quote created',
+        `${quoteNumber} sent to ${draft.contact_email} (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
+        pipelinePayload.sales_rep
+      );
+
+      // v27: bundle snapshot for bundle-mode quotes too.
+      if (bundleMode) {
+        const ok = await persistBundleSnapshot(deal.id);
+        if (!ok) {
+          console.warn('Bundle snapshot failed on quote; quote exists without bundle row.');
+        }
+      }
+
+      // v33.4: re-stamp the lead with the real deal id (was draft id placeholder).
+      await restampLeadIfFromLead(deal.id);
+
+      // Same as direct-deal: draft → quote means the draft has served its
+      // purpose. Best-effort delete; if it fails the rep can clean up later.
+      if (currentDraftId) {
+        try { await deleteDraft(currentDraftId); }
+        catch (err) { console.warn('Could not delete draft after submit:', err); }
+      }
+
+      const quoteUrl = buildQuoteUrl(quoteNumber, quoteToken);
+      const customerName = [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' ');
+      const mailtoUrl = buildMailto(
+        draft.contact_email,
+        customerName,
+        quoteNumber,
+        quoteUrl,
+        validUntil,
+        draft.quote_cover_note?.trim()
+      );
+
+      setSuccessInfo({
+        kind: 'quote',
+        dealId: deal.id,
+        quoteNumber,
+        quoteUrl,
+        mailtoUrl,
+        customerName,
+        customerEmail: draft.contact_email,
+        storeName: draft.store_name,
+        validUntil,
+      });
+
+      // Auto-open the rep's email client. They can also click the button on
+      // the success screen if their browser blocked the auto-open.
+      window.location.href = mailtoUrl;
+    } catch (err) {
+      console.error('submitAsQuote threw:', err);
+      setError(`Something went wrong while submitting the quote: ${err?.message || err}. Please try again, or take a screenshot of the browser console (F12 → Console) and share with your admin so we can fix the root cause.`);
+    } finally {
+      setSubmitting(false);
     }
-
-    // v33.4: re-stamp the lead with the real deal id (was draft id placeholder).
-    await restampLeadIfFromLead(deal.id);
-
-    // Same as direct-deal: draft → quote means the draft has served its
-    // purpose. Best-effort delete; if it fails the rep can clean up later.
-    if (currentDraftId) {
-      try { await deleteDraft(currentDraftId); }
-      catch (err) { console.warn('Could not delete draft after submit:', err); }
-    }
-
-    const quoteUrl = buildQuoteUrl(quoteNumber, quoteToken);
-    const customerName = [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' ');
-    const mailtoUrl = buildMailto(
-      draft.contact_email,
-      customerName,
-      quoteNumber,
-      quoteUrl,
-      validUntil,
-      draft.quote_cover_note?.trim()
-    );
-
-    setSuccessInfo({
-      kind: 'quote',
-      dealId: deal.id,
-      quoteNumber,
-      quoteUrl,
-      mailtoUrl,
-      customerName,
-      customerEmail: draft.contact_email,
-      storeName: draft.store_name,
-      validUntil,
-    });
-    setSubmitting(false);
-
-    // Auto-open the rep's email client. They can also click the button on the
-    // success screen if their browser blocked the auto-open.
-    window.location.href = mailtoUrl;
   }
 
   /**
@@ -1299,91 +1325,97 @@ ${repName}`;
     }
     setResending(true);
 
-    const base = buildBasePayload();
+    // Defensive wrap — see submitDeal for rationale.
+    try {
+      const base = buildBasePayload();
 
-    // Honor any valid-until the rep set, otherwise keep the original (don't
-    // silently extend an expired quote by 30 days without the rep's intent).
-    const validUntil = draft.quote_valid_until || editingQuote.quote_valid_until || (() => {
-      const d = new Date();
-      d.setDate(d.getDate() + 30);
-      return d.toISOString().slice(0, 10);
-    })();
+      // Honor any valid-until the rep set, otherwise keep the original (don't
+      // silently extend an expired quote by 30 days without the rep's intent).
+      const validUntil = draft.quote_valid_until || editingQuote.quote_valid_until || (() => {
+        const d = new Date();
+        d.setDate(d.getDate() + 30);
+        return d.toISOString().slice(0, 10);
+      })();
 
-    const nextRevision = (editingQuote.quote_revision || 1) + 1;
+      const nextRevision = (editingQuote.quote_revision || 1) + 1;
 
-    // Patch — everything from the form plus quote-specific updates. We
-    // explicitly DO NOT touch quote_number, quote_token, quote_first_sent_at,
-    // quote_first_viewed_at, customer_decision*, phase, is_quote.
-    const patch = {
-      ...base,
-      quote_cover_note: draft.quote_cover_note?.trim() || null,
-      quote_valid_until: validUntil,
-      quote_revision: nextRevision,
-    };
+      // Patch — everything from the form plus quote-specific updates. We
+      // explicitly DO NOT touch quote_number, quote_token, quote_first_sent_at,
+      // quote_first_viewed_at, customer_decision*, phase, is_quote.
+      const patch = {
+        ...base,
+        quote_cover_note: draft.quote_cover_note?.trim() || null,
+        quote_valid_until: validUntil,
+        quote_revision: nextRevision,
+      };
 
-    const { data: updated, error: updErr } = await updateQuote(editingQuote.id, patch);
-    if (updErr) {
-      setError(`Could not save changes: ${updErr.message}`);
+      const { data: updated, error: updErr } = await updateQuote(editingQuote.id, patch);
+      if (updErr) {
+        setError(`Could not save changes: ${updErr.message}`);
+        return;
+      }
+
+      // Audit log — record what changed at a high level. The full before/after
+      // would be more useful for forensics but we don't want a 50KB diff payload
+      // per revision. Summarize.
+      await logDealRevision({
+        dealId: editingQuote.id,
+        revision: nextRevision,
+        changedBy: base.sales_rep || session?.user?.email || 'unknown',
+        changeKind: 'quote_edit',
+        diff: {
+          equipment_count: equipmentItems.length,
+          total_eq_cost: dealTotal,
+          cover_note_changed:
+            (draft.quote_cover_note || '') !== (editingQuote.quote_cover_note || ''),
+          valid_until_changed:
+            validUntil !== editingQuote.quote_valid_until,
+          revision_from: editingQuote.quote_revision || 1,
+          revision_to: nextRevision,
+        },
+        notes: `Re-sent to ${draft.contact_email}`,
+      });
+
+      await logDealActivity(
+        editingQuote.id,
+        'Quote re-sent',
+        `Revision ${nextRevision} sent to ${draft.contact_email} (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
+        base.sales_rep,
+      );
+
+      // Re-open the rep's email client with the existing customer URL.
+      const quoteUrl = buildQuoteUrl(editingQuote.quote_number, editingQuote.quote_token);
+      const customerName = [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' ');
+      const mailtoUrl = buildMailto(
+        draft.contact_email,
+        customerName,
+        editingQuote.quote_number,
+        quoteUrl,
+        validUntil,
+        draft.quote_cover_note?.trim(),
+      );
+
+      setSuccessInfo({
+        kind: 'quote',
+        dealId: editingQuote.id,
+        quoteNumber: editingQuote.quote_number,
+        quoteUrl,
+        mailtoUrl,
+        customerName,
+        customerEmail: draft.contact_email,
+        storeName: draft.store_name,
+        validUntil,
+        isResend: true,
+        newRevision: nextRevision,
+      });
+
+      window.location.href = mailtoUrl;
+    } catch (err) {
+      console.error('resendQuote threw:', err);
+      setError(`Something went wrong while re-sending the quote: ${err?.message || err}. Please try again, or take a screenshot of the browser console (F12 → Console) and share with your admin so we can fix the root cause.`);
+    } finally {
       setResending(false);
-      return;
     }
-
-    // Audit log — record what changed at a high level. The full before/after
-    // would be more useful for forensics but we don't want a 50KB diff payload
-    // per revision. Summarize.
-    await logDealRevision({
-      dealId: editingQuote.id,
-      revision: nextRevision,
-      changedBy: base.sales_rep || session?.user?.email || 'unknown',
-      changeKind: 'quote_edit',
-      diff: {
-        equipment_count: equipmentItems.length,
-        total_eq_cost: dealTotal,
-        cover_note_changed:
-          (draft.quote_cover_note || '') !== (editingQuote.quote_cover_note || ''),
-        valid_until_changed:
-          validUntil !== editingQuote.quote_valid_until,
-        revision_from: editingQuote.quote_revision || 1,
-        revision_to: nextRevision,
-      },
-      notes: `Re-sent to ${draft.contact_email}`,
-    });
-
-    await logDealActivity(
-      editingQuote.id,
-      'Quote re-sent',
-      `Revision ${nextRevision} sent to ${draft.contact_email} (${equipmentItems.length} item${equipmentItems.length === 1 ? '' : 's'}, ${formatUSD(dealTotal)})`,
-      base.sales_rep,
-    );
-
-    // Re-open the rep's email client with the existing customer URL.
-    const quoteUrl = buildQuoteUrl(editingQuote.quote_number, editingQuote.quote_token);
-    const customerName = [draft.contact_first_name, draft.contact_last_name].filter(Boolean).join(' ');
-    const mailtoUrl = buildMailto(
-      draft.contact_email,
-      customerName,
-      editingQuote.quote_number,
-      quoteUrl,
-      validUntil,
-      draft.quote_cover_note?.trim(),
-    );
-
-    setSuccessInfo({
-      kind: 'quote',
-      dealId: editingQuote.id,
-      quoteNumber: editingQuote.quote_number,
-      quoteUrl,
-      mailtoUrl,
-      customerName,
-      customerEmail: draft.contact_email,
-      storeName: draft.store_name,
-      validUntil,
-      isResend: true,
-      newRevision: nextRevision,
-    });
-    setResending(false);
-
-    window.location.href = mailtoUrl;
   }
 
   function startNewDeal() {
@@ -2448,7 +2480,7 @@ ${repName}`;
       </div>
 
       {error && (
-        <div className="mt-4 p-4 bg-red-50 border border-red-200 rounded">
+        <div ref={errorRef} className="mt-4 p-4 bg-red-50 border border-red-200 rounded">
           <p className="text-sm text-red-700 whitespace-pre-line">{error}</p>
         </div>
       )}
