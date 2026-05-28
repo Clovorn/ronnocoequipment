@@ -2800,6 +2800,11 @@ function EquipmentRow({ item, useListPrice = false, allowOverride = false, onSel
     ? (item.list_price ?? 0)
     : effectiveUnitPrice(item, { allowOverride });
 
+  // Collapsed by default. The pencil icon next to the price toggles the
+  // "Adjust Pricing:" editor below the line — per-SKU, on the deal/quote
+  // form only. The override carries through to the pipeline on submit.
+  const [editing, setEditing] = useState(false);
+
   // Local text state so the rep can type freely (including intermediate values
   // like "12" on the way to "1200") without the parent reformatting mid-edit.
   const [draftPrice, setDraftPrice] = useState(
@@ -2811,19 +2816,26 @@ function EquipmentRow({ item, useListPrice = false, allowOverride = false, onSel
     setDraftPrice(item.sell_price_override != null ? String(item.sell_price_override) : '');
   }, [item.sell_price_override, item.equipment_id]);
 
+  // If the deal type changes and the override field is no longer allowed,
+  // close the editor so a stale open state doesn't linger.
+  useEffect(() => {
+    if (!allowOverride) setEditing(false);
+  }, [allowOverride]);
+
   const enteredNum = Number(draftPrice);
   const belowFloor = draftPrice.trim() !== '' && Number.isFinite(enteredNum) && enteredNum < floor;
   const isRaised = unitPrice > floor;
 
   function commitPrice(raw) {
     const trimmed = (raw ?? '').trim();
-    if (trimmed === '') { onSellPriceChange(''); return; }
+    if (trimmed === '') { onSellPriceChange(''); setEditing(false); return; }
     const n = Number(trimmed);
-    if (!Number.isFinite(n)) { onSellPriceChange(''); return; }
+    if (!Number.isFinite(n)) { onSellPriceChange(''); setEditing(false); return; }
     // Raise-only: snap anything at/below the catalog price back to "no override"
     // so the catalog price (the floor) is used. Reps cannot go below retail.
-    if (n <= floor) { onSellPriceChange(''); setDraftPrice(''); return; }
+    if (n <= floor) { onSellPriceChange(''); setDraftPrice(''); setEditing(false); return; }
     onSellPriceChange(String(n));
+    setEditing(false);
   }
 
   return (
@@ -2842,11 +2854,39 @@ function EquipmentRow({ item, useListPrice = false, allowOverride = false, onSel
                  onChange={(e) => onQuantityChange(parseInt(e.target.value, 10) || 1)}
                  className="w-14 px-2 py-1 bg-white border border-page-200 rounded text-sm text-center" />
           <div className="text-right">
-            <div className="font-mono tabular-nums text-sm text-slate-900">
-              ${(unitPrice * item.quantity).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            <div className="flex items-center justify-end gap-1.5">
+              <span className="font-mono tabular-nums text-sm text-slate-900">
+                ${(unitPrice * item.quantity).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              </span>
+              {/* Pencil — Purchase/Finance non-bundle deals only. Toggles the
+                  Adjust Pricing editor below. Raise-only, catalog is the floor. */}
+              {allowOverride && (
+                <button
+                  type="button"
+                  onClick={() => setEditing((v) => !v)}
+                  className={`p-1 rounded transition-colors ${
+                    editing ? 'text-navy-700 bg-navy-50' :
+                    isRaised ? 'text-accent-600 hover:text-accent-700' :
+                                'text-slate-400 hover:text-navy-700'
+                  }`}
+                  aria-label={editing ? 'Close price editor' : 'Adjust pricing'}
+                  aria-expanded={editing}
+                  title={isRaised ? `Marked up ${formatUSD(unitPrice - floor)} from catalog` : 'Adjust pricing'}
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path d="M12 20h9" />
+                    <path d="M16.5 3.5a2.121 2.121 0 1 1 3 3L7 19l-4 1 1-4 12.5-12.5z" />
+                  </svg>
+                </button>
+              )}
             </div>
             {item.quantity > 1 && (
               <div className="text-[10px] text-slate-400">${unitPrice.toLocaleString()} ea</div>
+            )}
+            {isRaised && !editing && (
+              <div className="text-[10px] text-accent-700 font-medium">
+                +{formatUSD(unitPrice - floor)} above catalog
+              </div>
             )}
           </div>
           <button onClick={onRemove} type="button" className="text-slate-400 hover:text-bad p-1" aria-label="Remove">
@@ -2857,14 +2897,15 @@ function EquipmentRow({ item, useListPrice = false, allowOverride = false, onSel
         </div>
       </div>
 
-      {/* Custom sell price — Purchase/Cash deals only. Raise-only: catalog
-          price is the floor. Lets a rep sell above stated retail on this
-          deal without ever touching the catalog. */}
-      {allowOverride && (
+      {/* Adjust Pricing editor — collapsed by default, opened by the pencil.
+          Purchase/Finance non-bundle deals only. Raise-only: catalog price
+          is the floor. Lives only on this deal/quote — never edits the
+          catalog. Persists on the deal through submission to the pipeline. */}
+      {allowOverride && editing && (
         <div className="mt-2.5 pt-2.5 border-t border-page-100 flex items-center gap-3 flex-wrap">
           <label className="flex items-center gap-2">
             <span className="text-[11px] uppercase tracking-wider text-slate-600 font-semibold">
-              Sell price (ea)
+              Adjust Pricing:
             </span>
             <div className="relative">
               <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">$</span>
@@ -2873,11 +2914,18 @@ function EquipmentRow({ item, useListPrice = false, allowOverride = false, onSel
                 min={floor}
                 step="0.01"
                 inputMode="decimal"
+                autoFocus
                 value={draftPrice}
                 placeholder={floor.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                 onChange={(e) => setDraftPrice(e.target.value)}
                 onBlur={(e) => commitPrice(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') e.currentTarget.blur();
+                  if (e.key === 'Escape') {
+                    setDraftPrice(item.sell_price_override != null ? String(item.sell_price_override) : '');
+                    setEditing(false);
+                  }
+                }}
                 className={`w-32 pl-5 pr-2 py-1 bg-white border rounded text-sm tabular-nums
                             focus:ring-2 focus:outline-none transition-colors
                             ${belowFloor
@@ -2894,11 +2942,6 @@ function EquipmentRow({ item, useListPrice = false, allowOverride = false, onSel
           {belowFloor && (
             <span className="text-[11px] text-bad font-medium">
               Can't sell below catalog price — will reset to {formatUSD(floor)}.
-            </span>
-          )}
-          {isRaised && !belowFloor && (
-            <span className="text-[11px] text-ok font-medium">
-              +{formatUSD(unitPrice - floor)} above catalog
             </span>
           )}
         </div>
