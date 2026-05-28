@@ -237,9 +237,18 @@ function QuoteDocument({ quote, dealBundle }) {
                       // file. This keeps the per-line numbers consistent with the
                       // deal total (which is computed the same way at submit time).
                       const p50 = it.price_50_plus;
-                      const unitPrice = (p50 != null && p50 !== '' && Number(p50) > 0)
+                      const catalogPrice = (p50 != null && p50 !== '' && Number(p50) > 0)
                         ? Number(p50)
                         : (it.list_price ?? 0);
+                      // Custom sell price (Purchase/Cash only, raise-only). The
+                      // submit-time snapshot already strips overrides on other
+                      // deal types, but we gate on Purchase here too and apply
+                      // only when it's actually above the catalog price.
+                      const isPurchase = quote.deal_type === 'Purchase Equipment';
+                      const ov = Number(it.sell_price_override);
+                      const unitPrice = (isPurchase && Number.isFinite(ov) && ov > catalogPrice)
+                        ? ov
+                        : catalogPrice;
                       const extended  = unitPrice * (it.quantity || 1);
                       return (
                         <tr key={i} className="text-slate-700">

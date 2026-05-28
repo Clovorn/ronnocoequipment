@@ -25,28 +25,63 @@ const formatUSD = (n) => `$${(n ?? 0).toLocaleString(undefined, { minimumFractio
 /* ───────────────────────── Pricing basis ───────────────────────── */
 
 /**
- * effectiveUnitPrice — the per-unit price used to build a NON-BUNDLE deal.
+ * catalogUnitPrice — the per-unit CATALOG price for a NON-BUNDLE item.
  *
  * Business rule (May 2026): non-bundle deals price off the catalog's
  * "Price 50+ units" tier (`price_50_plus`) rather than `list_price`.
  * When an item has no 50+ price on file we fall back to `list_price` so
  * nothing ever prices at $0 by accident.
  *
- * Bundles are unaffected — their pricing is computed entirely in
- * bundleMath.js / bundlePricing and never calls this helper.
+ * This is the price the catalog dictates, and it is the FLOOR for any
+ * rep-entered sell price (see effectiveUnitPrice). Bundles are unaffected —
+ * their pricing is computed entirely in bundleMath.js / bundlePricing and
+ * never calls this helper.
  */
-function effectiveUnitPrice(item) {
+function catalogUnitPrice(item) {
   if (!item) return 0;
   const p50 = item.price_50_plus;
   if (p50 != null && p50 !== '' && Number(p50) > 0) return Number(p50);
   return item.list_price ?? 0;
 }
 
+/**
+ * sellPriceFloor — the lowest sell price a rep may enter for an item. Equal
+ * to the catalog unit price; reps can raise above this but never below.
+ */
+function sellPriceFloor(item) {
+  return catalogUnitPrice(item);
+}
+
+/**
+ * effectiveUnitPrice — the per-unit price actually used to build a deal.
+ *
+ * Custom sell price (Nov 2026): on PURCHASE/CASH deals only, a rep may raise
+ * the per-line sell price above the catalog price (e.g. selling above stated
+ * retail). The override lives only on the deal/quote — it never changes the
+ * catalog. It is RAISE-ONLY: the catalog price is the floor, so an override
+ * below the floor (or a malformed one) is ignored and the catalog price is
+ * used instead.
+ *
+ * Overrides apply ONLY when `allowOverride` is true. Lease/Finance/Loan deals
+ * and bundles pass allowOverride=false and always get the catalog price, so
+ * their pricing is identical to before this feature.
+ */
+function effectiveUnitPrice(item, { allowOverride = false } = {}) {
+  if (!item) return 0;
+  const floor = catalogUnitPrice(item);
+  if (allowOverride) {
+    const ov = Number(item.sell_price_override);
+    if (Number.isFinite(ov) && ov > floor) return ov;
+  }
+  return floor;
+}
+
 /* ───────────────────────── Equipment summary ───────────────────────── */
 
-function summarizeEquipment(items, { useListPrice = false } = {}) {
+function summarizeEquipment(items, { useListPrice = false, allowOverride = false } = {}) {
   if (!items.length) return { text: '', total: 0 };
-  const unit = (it) => (useListPrice ? (it.list_price ?? 0) : effectiveUnitPrice(it));
+  const unit = (it) =>
+    useListPrice ? (it.list_price ?? 0) : effectiveUnitPrice(it, { allowOverride });
   const lines = items.map((it) => {
     const price = unit(it);
     const modelStr = it.model ? ` (${it.model})` : '';
@@ -666,9 +701,19 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
   // so call this explicitly from each equipment change site.
   const markDraftDirty = () => setDraftStatus((s) => (s === 'saved' ? 'idle' : s));
 
+  // Custom sell price (raise-only) is allowed ONLY on Purchase/Cash deals,
+  // and never in bundle mode. Lease/Finance/Loan price strictly off the
+  // catalog. This single flag drives the summary math, the per-row editor,
+  // and the snapshot — keep them all reading from it.
+  const allowSellPriceOverride =
+    !bundleMode && draft.deal_type === 'Purchase Equipment';
+
   const eqSummary = useMemo(
-    () => summarizeEquipment(equipmentItems, { useListPrice: bundleMode }),
-    [equipmentItems, bundleMode]
+    () => summarizeEquipment(equipmentItems, {
+      useListPrice: bundleMode,
+      allowOverride: allowSellPriceOverride,
+    }),
+    [equipmentItems, bundleMode, allowSellPriceOverride]
   );
   const dealTotal = eqSummary.total;
   // v27.1 bug fix — in bundle mode the lease/finance floor must be checked
@@ -848,7 +893,13 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
       // Structured snapshot (preserves equipment + computed totals + raw form state)
       raw_csv: {
         source: 'ronnoco-deal-builder',
-        equipment_items: equipmentItems,
+        // Persist equipment items. Sell-price overrides only apply on
+        // Purchase deals (raise-only); on any other deal type we strip the
+        // field so the saved snapshot can't carry a stale/inapplicable
+        // override into the pipeline or the customer quote.
+        equipment_items: allowSellPriceOverride
+          ? equipmentItems
+          : equipmentItems.map(({ sell_price_override, ...rest }) => rest),
         total_eq_cost_numeric: dealTotal,
         monthly_lease_estimate: monthlyEstimate,
         qualifies_for_finance: qualifiesForFinance,
@@ -2093,6 +2144,17 @@ ${repName}`;
                       key={item.equipment_id || idx}
                       item={item}
                       useListPrice={bundleMode}
+                      allowOverride={allowSellPriceOverride}
+                      onSellPriceChange={(val) => {
+                        setEquipmentItems((prev) => prev.map((it, i) => {
+                          if (i !== idx) return it;
+                          // Store the raw entered value; effectiveUnitPrice
+                          // enforces the floor at read time. Empty clears it.
+                          const trimmed = (val ?? '').toString().trim();
+                          return { ...it, sell_price_override: trimmed === '' ? null : Number(trimmed) };
+                        }));
+                        markDraftDirty();
+                      }}
                       onQuantityChange={(q) => {
                         setEquipmentItems((prev) => prev.map((it, i) => i === idx ? { ...it, quantity: q } : it));
                         markDraftDirty();
@@ -2726,36 +2788,115 @@ function Toggle({ label, hint, checked, onChange }) {
     </div>
   );
 }
-function EquipmentRow({ item, useListPrice = false, onQuantityChange, onRemove }) {
-  const unitPrice = useListPrice ? (item.list_price ?? 0) : effectiveUnitPrice(item);
+function EquipmentRow({ item, useListPrice = false, allowOverride = false, onSellPriceChange, onQuantityChange, onRemove }) {
+  const floor = sellPriceFloor(item);
+  const unitPrice = useListPrice
+    ? (item.list_price ?? 0)
+    : effectiveUnitPrice(item, { allowOverride });
+
+  // Local text state so the rep can type freely (including intermediate values
+  // like "12" on the way to "1200") without the parent reformatting mid-edit.
+  const [draftPrice, setDraftPrice] = useState(
+    item.sell_price_override != null ? String(item.sell_price_override) : ''
+  );
+  // Keep local state in sync if the item's override changes from outside
+  // (e.g. deal hydration, or deal type toggling the field on/off).
+  useEffect(() => {
+    setDraftPrice(item.sell_price_override != null ? String(item.sell_price_override) : '');
+  }, [item.sell_price_override, item.equipment_id]);
+
+  const enteredNum = Number(draftPrice);
+  const belowFloor = draftPrice.trim() !== '' && Number.isFinite(enteredNum) && enteredNum < floor;
+  const isRaised = unitPrice > floor;
+
+  function commitPrice(raw) {
+    const trimmed = (raw ?? '').trim();
+    if (trimmed === '') { onSellPriceChange(''); return; }
+    const n = Number(trimmed);
+    if (!Number.isFinite(n)) { onSellPriceChange(''); return; }
+    // Raise-only: snap anything at/below the catalog price back to "no override"
+    // so the catalog price (the floor) is used. Reps cannot go below retail.
+    if (n <= floor) { onSellPriceChange(''); setDraftPrice(''); return; }
+    onSellPriceChange(String(n));
+  }
+
   return (
-    <li className="flex items-start gap-3 bg-white border border-page-200 rounded p-3">
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2 mb-0.5">
-          <span className="font-mono text-[10px] text-slate-500">{item.sku}</span>
-          {item.vendor && <span className="text-[10px] text-slate-400">· {item.vendor}</span>}
-        </div>
-        <div className="text-sm font-medium text-slate-900">{item.description}</div>
-        {item.model && <div className="text-xs text-slate-500">{item.model}</div>}
-      </div>
-      <div className="flex items-center gap-2 flex-shrink-0">
-        <input type="number" min="1" value={item.quantity}
-               onChange={(e) => onQuantityChange(parseInt(e.target.value, 10) || 1)}
-               className="w-14 px-2 py-1 bg-white border border-page-200 rounded text-sm text-center" />
-        <div className="text-right">
-          <div className="font-mono tabular-nums text-sm text-slate-900">
-            ${(unitPrice * item.quantity).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+    <li className="bg-white border border-page-200 rounded p-3">
+      <div className="flex items-start gap-3">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 mb-0.5">
+            <span className="font-mono text-[10px] text-slate-500">{item.sku}</span>
+            {item.vendor && <span className="text-[10px] text-slate-400">· {item.vendor}</span>}
           </div>
-          {item.quantity > 1 && (
-            <div className="text-[10px] text-slate-400">${unitPrice.toLocaleString()} ea</div>
+          <div className="text-sm font-medium text-slate-900">{item.description}</div>
+          {item.model && <div className="text-xs text-slate-500">{item.model}</div>}
+        </div>
+        <div className="flex items-center gap-2 flex-shrink-0">
+          <input type="number" min="1" value={item.quantity}
+                 onChange={(e) => onQuantityChange(parseInt(e.target.value, 10) || 1)}
+                 className="w-14 px-2 py-1 bg-white border border-page-200 rounded text-sm text-center" />
+          <div className="text-right">
+            <div className="font-mono tabular-nums text-sm text-slate-900">
+              ${(unitPrice * item.quantity).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </div>
+            {item.quantity > 1 && (
+              <div className="text-[10px] text-slate-400">${unitPrice.toLocaleString()} ea</div>
+            )}
+          </div>
+          <button onClick={onRemove} type="button" className="text-slate-400 hover:text-bad p-1" aria-label="Remove">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      {/* Custom sell price — Purchase/Cash deals only. Raise-only: catalog
+          price is the floor. Lets a rep sell above stated retail on this
+          deal without ever touching the catalog. */}
+      {allowOverride && (
+        <div className="mt-2.5 pt-2.5 border-t border-page-100 flex items-center gap-3 flex-wrap">
+          <label className="flex items-center gap-2">
+            <span className="text-[11px] uppercase tracking-wider text-slate-600 font-semibold">
+              Sell price (ea)
+            </span>
+            <div className="relative">
+              <span className="absolute left-2 top-1/2 -translate-y-1/2 text-xs text-slate-400">$</span>
+              <input
+                type="number"
+                min={floor}
+                step="0.01"
+                inputMode="decimal"
+                value={draftPrice}
+                placeholder={floor.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                onChange={(e) => setDraftPrice(e.target.value)}
+                onBlur={(e) => commitPrice(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
+                className={`w-32 pl-5 pr-2 py-1 bg-white border rounded text-sm tabular-nums
+                            focus:ring-2 focus:outline-none transition-colors
+                            ${belowFloor
+                              ? 'border-bad/60 focus:border-bad focus:ring-bad/10'
+                              : 'border-page-200 focus:border-navy-500 focus:ring-navy-500/10'}`}
+              />
+            </div>
+          </label>
+
+          <span className="text-[11px] text-slate-500">
+            Catalog: <span className="font-mono tabular-nums">{formatUSD(floor)}</span>
+          </span>
+
+          {belowFloor && (
+            <span className="text-[11px] text-bad font-medium">
+              Can't sell below catalog price — will reset to {formatUSD(floor)}.
+            </span>
+          )}
+          {isRaised && !belowFloor && (
+            <span className="text-[11px] text-ok font-medium">
+              +{formatUSD(unitPrice - floor)} above catalog
+            </span>
           )}
         </div>
-        <button onClick={onRemove} type="button" className="text-slate-400 hover:text-bad p-1" aria-label="Remove">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path d="M18 6 6 18M6 6l12 12" />
-          </svg>
-        </button>
-      </div>
+      )}
     </li>
   );
 }

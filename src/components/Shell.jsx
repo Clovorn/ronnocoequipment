@@ -37,7 +37,9 @@ export default function Shell({ profile, session, routeName, navigate, children 
 
   return (
     <div className="min-h-screen bg-page-50 pb-[calc(5rem+env(safe-area-inset-bottom))] md:pb-0">
-      <header className="bg-navy-900 text-chalk-50 shadow-navbar sticky top-0 z-30 print:hidden">
+      <header className="bg-navy-900 text-chalk-50 shadow-navbar sticky top-0 z-30 print:hidden
+                         pt-[env(safe-area-inset-top)]
+                         pl-[env(safe-area-inset-left)] pr-[env(safe-area-inset-right)]">
         <div className="px-4 md:px-6 lg:px-10 py-3 md:py-4 flex items-center justify-between gap-4">
           <button onClick={() => navigate('home')}
                   className="flex items-center gap-4 group" aria-label="Go to home">
