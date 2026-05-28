@@ -240,13 +240,15 @@ function QuoteDocument({ quote, dealBundle }) {
                       const catalogPrice = (p50 != null && p50 !== '' && Number(p50) > 0)
                         ? Number(p50)
                         : (it.list_price ?? 0);
-                      // Custom sell price (Purchase/Cash only, raise-only). The
-                      // submit-time snapshot already strips overrides on other
-                      // deal types, but we gate on Purchase here too and apply
-                      // only when it's actually above the catalog price.
-                      const isPurchase = quote.deal_type === 'Purchase Equipment';
+                      // Custom sell price (Purchase/Cash and Finance only,
+                      // raise-only). The submit-time snapshot already strips
+                      // overrides on other deal types, but we gate by deal
+                      // type here too for defense-in-depth and apply only
+                      // when the override is actually above the catalog price.
+                      const allowOv = quote.deal_type === 'Purchase Equipment'
+                                   || quote.deal_type === 'Finance Equipment';
                       const ov = Number(it.sell_price_override);
-                      const unitPrice = (isPurchase && Number.isFinite(ov) && ov > catalogPrice)
+                      const unitPrice = (allowOv && Number.isFinite(ov) && ov > catalogPrice)
                         ? ov
                         : catalogPrice;
                       const extended  = unitPrice * (it.quantity || 1);

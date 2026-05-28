@@ -701,12 +701,18 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
   // so call this explicitly from each equipment change site.
   const markDraftDirty = () => setDraftStatus((s) => (s === 'saved' ? 'idle' : s));
 
-  // Custom sell price (raise-only) is allowed ONLY on Purchase/Cash deals,
-  // and never in bundle mode. Lease/Finance/Loan price strictly off the
+  // Custom sell price (raise-only) is allowed on Purchase/Cash and Finance
+  // deals, and never in bundle mode. Lease and Loan price strictly off the
   // catalog. This single flag drives the summary math, the per-row editor,
   // and the snapshot — keep them all reading from it.
+  //
+  // Note: Finance deals are eligible because the rep is still pricing the
+  // hardware up front; the customer's actual monthly payment is set by
+  // underwriting after the credit application is approved, not here, so the
+  // override just raises the financed amount.
   const allowSellPriceOverride =
-    !bundleMode && draft.deal_type === 'Purchase Equipment';
+    !bundleMode &&
+    (draft.deal_type === 'Purchase Equipment' || draft.deal_type === 'Finance Equipment');
 
   const eqSummary = useMemo(
     () => summarizeEquipment(equipmentItems, {
