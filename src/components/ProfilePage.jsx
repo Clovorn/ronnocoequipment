@@ -58,6 +58,17 @@ function DisplayInfoCard({ profile, session, onUpdated }) {
   const [error, setError] = useState(null);
   const [savedAt, setSavedAt] = useState(null);
 
+  // The profile prop can arrive (or change) after this card first mounts —
+  // useState initializers only run once, so without this the fields would
+  // stay blank even after the profile loads. Re-sync local edit state to the
+  // profile whenever it changes, unless the user has unsaved edits in flight.
+  useEffect(() => {
+    setName(profile?.display_name || '');
+    setTitle(profile?.title || '');
+    setPhone(profile?.phone || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profile?.user_id, profile?.display_name, profile?.title, profile?.phone]);
+
   const role = profile?.role || null;
   const roleLabel = role ? ({ admin: 'Admin', director: 'Director', sales: 'Sales', customer: 'Customer' }[role] || role) : 'Loading…';
   const isDirty =
@@ -68,12 +79,27 @@ function DisplayInfoCard({ profile, session, onUpdated }) {
   async function save() {
     if (!isDirty) return;
     setSaving(true); setError(null);
-    const { data, error } = await supabase
+    let { data, error } = await supabase
       .from('user_profiles')
       .update({ display_name: name.trim() || null, title: title.trim() || null, phone: phone.trim() || null })
       .eq('user_id', session.user.id)
       .select()
       .single();
+
+    // If the v33 title/phone columns aren't present on this Supabase project,
+    // the update errors. Retry with just display_name so the rep can still
+    // save their name rather than being blocked entirely.
+    if (error) {
+      const retry = await supabase
+        .from('user_profiles')
+        .update({ display_name: name.trim() || null })
+        .eq('user_id', session.user.id)
+        .select()
+        .single();
+      data = retry.data;
+      error = retry.error;
+    }
+
     setSaving(false);
     if (error) {
       setError(error.message);

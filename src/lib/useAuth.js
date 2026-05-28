@@ -18,24 +18,52 @@ export function useAuth() {
   useEffect(() => {
     let cancelled = false;
 
-    async function loadProfile(userId) {
+    async function loadProfile(userId, sessionUser = null) {
+      // Preferred read — includes the v33 contact fields (title, phone).
       let { data, error } = await supabase
         .from('user_profiles')
         .select('user_id, role, display_name, active, director_id, title, phone')
         .eq('user_id', userId)
         .maybeSingle();
 
-      if (error && /title|phone/i.test(error.message || '')) {
+      // If the rich select fails for ANY reason (most commonly because the
+      // v33 title/phone columns haven't been added to this Supabase project
+      // yet, but also transient schema-cache errors), retry with the minimal
+      // column set that has existed since the original schema. We don't match
+      // on the error text anymore — PostgREST's missing-column message isn't
+      // guaranteed to name the column, and a missed retry left the whole
+      // profile null, which renders the profile page blank.
+      if (error) {
+        console.warn('Profile rich-select failed, retrying minimal columns:', error.message);
         ({ data, error } = await supabase
           .from('user_profiles')
           .select('user_id, role, display_name, active, director_id')
           .eq('user_id', userId)
           .maybeSingle());
       }
+
       if (cancelled) return;
+
       if (error) {
-        console.error('Failed to load profile:', error);
-        setProfile(null);
+        // Both reads failed. Rather than leave profile null (blank profile
+        // page, role stuck on "Loading…"), synthesize a minimal profile from
+        // the auth session so the app stays usable and the email at least
+        // shows. Role defaults to 'sales' — the least-privileged working role.
+        console.error('Failed to load profile (both attempts):', error);
+        if (sessionUser) {
+          setProfile({
+            user_id: userId,
+            role: 'sales',
+            display_name: sessionUser.email || null,
+            active: true,
+            director_id: null,
+            title: null,
+            phone: null,
+            _synthesized: true,
+          });
+        } else {
+          setProfile(null);
+        }
       } else {
         setProfile(data);
       }
@@ -46,7 +74,7 @@ export function useAuth() {
       if (cancelled) return;
       setSession(data.session);
       if (data.session?.user) {
-        loadProfile(data.session.user.id).finally(() => {
+        loadProfile(data.session.user.id, data.session.user).finally(() => {
           if (!cancelled) setLoading(false);
         });
       } else {
@@ -59,7 +87,7 @@ export function useAuth() {
       if (cancelled) return;
       setSession(newSession);
       if (newSession?.user) {
-        loadProfile(newSession.user.id);
+        loadProfile(newSession.user.id, newSession.user);
       } else {
         setProfile(null);
       }
