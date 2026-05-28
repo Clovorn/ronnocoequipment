@@ -126,6 +126,13 @@ function QuoteDocument({ quote, dealBundle }) {
       })[quote.deal_type] || quote.deal_type || 'Equipment Quote');
 
   const isLeaseDealType = quote.deal_type === 'Lease Equipment';
+  const isFinanceDealType = quote.deal_type === 'Finance Equipment';
+  // Quotes that show the Estimated Monthly Lease line to the customer.
+  // Lease + Finance both display it: on Lease it's the lease estimate the
+  // customer is likely to pay; on Finance it's a reference figure using
+  // Ronnoco's standard lease factor — the actual finance terms come from
+  // underwriting after the credit application is approved.
+  const showsMonthlyEstimate = isLeaseDealType || isFinanceDealType;
 
   return (
     <div className="min-h-screen bg-page-50">
@@ -332,15 +339,16 @@ function QuoteDocument({ quote, dealBundle }) {
                   <span className="font-mono tabular-nums text-slate-900 min-w-[120px] text-right">{formatUSD(totalNumeric)}</span>
                 </div>
 
-                {isLeaseDealType && qualifiesLease && monthlyLease != null && (
+                {showsMonthlyEstimate && qualifiesLease && monthlyLease != null && (
                   <>
                     <div className="flex gap-12 text-sm">
                       <span className="text-slate-600">Estimated Monthly Lease</span>
                       <span className="font-mono tabular-nums text-slate-900 min-w-[120px] text-right">{formatUSD(monthlyLease)} <span className="text-slate-500 text-xs font-sans">/mo</span></span>
                     </div>
                     <p className="text-xs text-slate-500 mt-2 max-w-md text-right">
-                      Monthly estimate uses Ronnoco's standard lease factor and assumes a typical lease term.
-                      Final terms are subject to credit approval and may vary based on lease length and program.
+                      {isFinanceDealType
+                        ? 'Estimate uses Ronnoco\u2019s standard lease factor for reference. Actual financing terms are set after credit approval and may differ.'
+                        : 'Monthly estimate uses Ronnoco\u2019s standard lease factor and assumes a typical lease term. Final terms are subject to credit approval and may vary based on lease length and program.'}
                     </p>
                   </>
                 )}
