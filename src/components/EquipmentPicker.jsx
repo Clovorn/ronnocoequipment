@@ -29,7 +29,7 @@ export default function EquipmentPicker({ onPick, onClose, multiSelect = true, a
     let cancelled = false;
     supabase
       .from('v_catalog')
-      .select('id, sku, description, model, list_price, lease_eligible, lease_monthly_estimate, vendor, vendor_id, category')
+      .select('id, sku, description, model, list_price, price_50_plus, lease_eligible, lease_monthly_estimate, vendor, vendor_id, category')
       .eq('active', true)
       .order('description')
       .limit(500)

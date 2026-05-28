@@ -22,16 +22,37 @@ import EquipmentPicker from './EquipmentPicker.jsx';
 
 const formatUSD = (n) => `$${(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+/* ───────────────────────── Pricing basis ───────────────────────── */
+
+/**
+ * effectiveUnitPrice — the per-unit price used to build a NON-BUNDLE deal.
+ *
+ * Business rule (May 2026): non-bundle deals price off the catalog's
+ * "Price 50+ units" tier (`price_50_plus`) rather than `list_price`.
+ * When an item has no 50+ price on file we fall back to `list_price` so
+ * nothing ever prices at $0 by accident.
+ *
+ * Bundles are unaffected — their pricing is computed entirely in
+ * bundleMath.js / bundlePricing and never calls this helper.
+ */
+function effectiveUnitPrice(item) {
+  if (!item) return 0;
+  const p50 = item.price_50_plus;
+  if (p50 != null && p50 !== '' && Number(p50) > 0) return Number(p50);
+  return item.list_price ?? 0;
+}
+
 /* ───────────────────────── Equipment summary ───────────────────────── */
 
-function summarizeEquipment(items) {
+function summarizeEquipment(items, { useListPrice = false } = {}) {
   if (!items.length) return { text: '', total: 0 };
+  const unit = (it) => (useListPrice ? (it.list_price ?? 0) : effectiveUnitPrice(it));
   const lines = items.map((it) => {
-    const price = it.list_price ?? 0;
+    const price = unit(it);
     const modelStr = it.model ? ` (${it.model})` : '';
     return `${it.quantity}× ${it.description}${modelStr} — ${formatUSD(price)} ea`;
   });
-  const total = items.reduce((sum, it) => sum + (it.list_price ?? 0) * it.quantity, 0);
+  const total = items.reduce((sum, it) => sum + unit(it) * it.quantity, 0);
   return { text: lines.join('\n'), total };
 }
 
@@ -645,7 +666,10 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
   // so call this explicitly from each equipment change site.
   const markDraftDirty = () => setDraftStatus((s) => (s === 'saved' ? 'idle' : s));
 
-  const eqSummary = useMemo(() => summarizeEquipment(equipmentItems), [equipmentItems]);
+  const eqSummary = useMemo(
+    () => summarizeEquipment(equipmentItems, { useListPrice: bundleMode }),
+    [equipmentItems, bundleMode]
+  );
   const dealTotal = eqSummary.total;
   // v27.1 bug fix — in bundle mode the lease/finance floor must be checked
   // against the bundle's leaseBasis (hardware + soft cost + service reserve),
@@ -2068,6 +2092,7 @@ ${repName}`;
                     <EquipmentRow
                       key={item.equipment_id || idx}
                       item={item}
+                      useListPrice={bundleMode}
                       onQuantityChange={(q) => {
                         setEquipmentItems((prev) => prev.map((it, i) => i === idx ? { ...it, quantity: q } : it));
                         markDraftDirty();
@@ -2364,6 +2389,7 @@ ${repName}`;
                 model: eq.model,
                 vendor: eq.vendor || null,
                 list_price: eq.list_price,
+                price_50_plus: eq.price_50_plus ?? null,
                 quantity: 1,
                 // v27: items added in bundle mode after the initial hydration
                 // are add-ons rather than part of the bundle's defaults.
@@ -2494,7 +2520,7 @@ function DealSummary({ total, monthlyEstimate, qualifies, dealType }) {
             <div className="font-mono tabular-nums text-2xl font-medium text-slate-900">
               ${total.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </div>
-            <div className="text-[11px] text-slate-500 mt-1">Total list price of all selected equipment</div>
+            <div className="text-[11px] text-slate-500 mt-1">Total of all selected equipment at 50+ unit pricing</div>
           </div>
           {qualifies ? (
             <div className="bg-accent-500/5 border border-accent-500/30 rounded-lg p-4">
@@ -2699,7 +2725,8 @@ function Toggle({ label, hint, checked, onChange }) {
     </div>
   );
 }
-function EquipmentRow({ item, onQuantityChange, onRemove }) {
+function EquipmentRow({ item, useListPrice = false, onQuantityChange, onRemove }) {
+  const unitPrice = useListPrice ? (item.list_price ?? 0) : effectiveUnitPrice(item);
   return (
     <li className="flex items-start gap-3 bg-white border border-page-200 rounded p-3">
       <div className="min-w-0 flex-1">
@@ -2716,10 +2743,10 @@ function EquipmentRow({ item, onQuantityChange, onRemove }) {
                className="w-14 px-2 py-1 bg-white border border-page-200 rounded text-sm text-center" />
         <div className="text-right">
           <div className="font-mono tabular-nums text-sm text-slate-900">
-            ${((item.list_price ?? 0) * item.quantity).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            ${(unitPrice * item.quantity).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
           </div>
           {item.quantity > 1 && (
-            <div className="text-[10px] text-slate-400">${(item.list_price ?? 0).toLocaleString()} ea</div>
+            <div className="text-[10px] text-slate-400">${unitPrice.toLocaleString()} ea</div>
           )}
         </div>
         <button onClick={onRemove} type="button" className="text-slate-400 hover:text-bad p-1" aria-label="Remove">

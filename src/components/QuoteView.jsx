@@ -226,14 +226,21 @@ function QuoteDocument({ quote, dealBundle }) {
                     <tr className="text-left text-[11px] uppercase tracking-wider text-slate-500 font-semibold">
                       <th className="px-2 py-2 w-12">Qty</th>
                       <th className="px-2 py-2">Item</th>
-                      {!isBundleDeal && <th className="px-2 py-2 text-right">List Price</th>}
+                      {!isBundleDeal && <th className="px-2 py-2 text-right">Unit Price</th>}
                       {!isBundleDeal && <th className="px-2 py-2 text-right">Extended</th>}
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-page-100">
                     {equipmentItems.map((it, i) => {
-                      const listPrice = it.list_price ?? 0;
-                      const extended  = listPrice * (it.quantity || 1);
+                      // Non-bundle deals price off the catalog's "Price 50+ units"
+                      // tier; fall back to list price when a 50+ price isn't on
+                      // file. This keeps the per-line numbers consistent with the
+                      // deal total (which is computed the same way at submit time).
+                      const p50 = it.price_50_plus;
+                      const unitPrice = (p50 != null && p50 !== '' && Number(p50) > 0)
+                        ? Number(p50)
+                        : (it.list_price ?? 0);
+                      const extended  = unitPrice * (it.quantity || 1);
                       return (
                         <tr key={i} className="text-slate-700">
                           <td className="px-2 py-3 align-top font-mono text-slate-600">{it.quantity}</td>
@@ -243,7 +250,7 @@ function QuoteDocument({ quote, dealBundle }) {
                               <div className="text-xs text-slate-500 mt-0.5">{[it.vendor, it.model, it.sku].filter(Boolean).join(' · ')}</div>
                             )}
                           </td>
-                          {!isBundleDeal && <td className="px-2 py-3 align-top text-right tabular-nums">{formatUSD(listPrice)}</td>}
+                          {!isBundleDeal && <td className="px-2 py-3 align-top text-right tabular-nums">{formatUSD(unitPrice)}</td>}
                           {!isBundleDeal && <td className="px-2 py-3 align-top text-right tabular-nums font-medium text-slate-900">{formatUSD(extended)}</td>}
                         </tr>
                       );
