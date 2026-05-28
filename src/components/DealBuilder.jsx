@@ -777,6 +777,13 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
     if (mode === 'quote' && draft.deal_type && !isQuoteable(draft.deal_type)) {
       businessErrors.push(`${draft.deal_type} deals can't be quoted to customers — submit as a direct deal instead.`);
     }
+    // Nov 2026: deal_type is required for quote submission. The customer-
+    // facing quote shows Purchase vs Lease vs Finance differently (monthly
+    // estimate appears for Lease/Finance), so a typeless quote renders blank
+    // where pricing info should be. Block submission until the rep picks one.
+    if (mode === 'quote' && !trimOrNull(draft.deal_type)) {
+      businessErrors.push('Deal Type is required for quotes — choose Purchase, Lease, or Finance so the customer sees the correct pricing.');
+    }
 
     if (missing.length === 0 && businessErrors.length === 0) return null;
 
@@ -2077,11 +2084,15 @@ ${repName}`;
 
       {/* ─── Section: Equipment & Deal Info ─── */}
       {/* Equipment selection is the heart of the quote — the customer absolutely
-          needs to see what's being quoted. Deal Type (lease vs purchase) and the
-          two financial fields (last-3-month coffee spend, expected monthly
-          sales) are leasing-team inputs not relevant on the customer-facing quote. */}
+          needs to see what's being quoted. Deal Type is now shown in BOTH deal
+          and quote modes (Nov 2026): the customer-facing quote distinguishes
+          Lease / Finance / Purchase and shows a monthly estimate for Lease and
+          Finance, so the rep must declare the type before sending. The two
+          financial reference fields (last-3-month coffee spend, expected
+          monthly sales) remain leasing-team-only and aren't shown on the
+          customer's quote page. */}
       <Section title="Equipment & Deal Information">
-        {submitMode === 'deal' && bundleMode && (
+        {bundleMode && (
           <div className="mb-4">
             <Label>Deal Type</Label>
             <div className="mt-1 inline-flex items-center gap-2 px-3 py-1.5 rounded-full
@@ -2096,11 +2107,17 @@ ${repName}`;
             </div>
           </div>
         )}
-        {submitMode === 'deal' && !bundleMode && (
+        {!bundleMode && (
           <div className="mb-4">
             <Label required>Deal Type</Label>
             <div className="flex flex-wrap gap-2 mt-1">
-              {dealTypeList.options.map((opt) => {
+              {dealTypeList.options
+                /* In quote mode, hide deal types that can't be quoted to a
+                   customer (Loan). The Submit-as-Quote button is also gated
+                   downstream; filtering here means the rep can't even pick
+                   it in the first place when they're building a quote. */
+                .filter((opt) => submitMode !== 'quote' || isQuoteable(opt.value))
+                .map((opt) => {
                 const isFinanceType = opt.value === 'Lease Equipment' || opt.value === 'Finance Equipment';
                 const disabled = isFinanceType && equipmentItems.length > 0 && !qualifiesForFinance;
                 return (
