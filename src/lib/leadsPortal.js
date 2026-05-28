@@ -96,14 +96,25 @@ export async function markLeadInProgress(leadId, draftId) {
 }
 
 /**
- * v33.5: Revert a lead back to the active queue. Called when a rep deletes
- * the Deal Builder draft that was created from a converted lead — the rep
- * is effectively cancelling the conversion, so the lead should reappear in
- * their leads list so they can either re-convert later or mark it lost.
+ * Move a lead OUT of 'in_progress' or 'won' state back to 'active'. Two
+ * call sites:
  *
- * Clears deal_id (the draft id was a placeholder) and resets status='active'.
- * The leads portal will continue to filter by assigned_sales_rep so it'll
- * show up on the same rep's screen.
+ *   1. Abandoned conversion — the rep clicked "Convert" on a lead, started
+ *      a Deal Builder draft, then discarded that draft without submitting.
+ *      The draft id was used as a placeholder deal_id on the lead, so we
+ *      clear it; the lead reappears in the rep's leads list and they can
+ *      either re-convert later or mark it lost.
+ *
+ *   2. Deleted quote from a converted lead — the rep deleted a quote that
+ *      had been generated from a lead. The lead was previously stamped
+ *      status='won' with deal_id=<real deal id>; with the deal gone, the
+ *      lead would otherwise be stranded showing "won" but pointing to
+ *      nothing. Resetting brings it back into the rep's working list so
+ *      they can re-convert if appropriate.
+ *
+ * Both cases end at the same state (status='active', deal_id=null), so they
+ * share this one helper. The leads portal continues to filter by
+ * assigned_sales_rep, so the lead will show up on the same rep's screen.
  */
 export async function revertLeadToActive(leadId) {
   const { error } = await leadsPortal
@@ -111,6 +122,22 @@ export async function revertLeadToActive(leadId) {
     .update({ deal_id: null, status: 'active' })
     .eq('id', leadId);
   return { error };
+}
+
+/**
+ * Find the lead that was converted into the given pipeline deal, if any.
+ * Used by the delete-quote flow so we can also reset the originating lead
+ * when its deal is destroyed. Returns null when the deal didn't come from
+ * a lead (which is the common case — most deals are built from scratch).
+ */
+export async function findLeadByDealId(dealId) {
+  if (!dealId) return { data: null, error: null };
+  const { data, error } = await leadsPortal
+    .from('leads')
+    .select('id, status, deal_id, assigned_sales_rep')
+    .eq('deal_id', dealId)
+    .maybeSingle();
+  return { data, error };
 }
 
 /**

@@ -53,6 +53,54 @@ export async function submitDealToPipeline(payload) {
 }
 
 /**
+ * Hard-delete a deal row. All FK references (deal_activity, deal_revisions,
+ * deal_bundles, deal_documents, deal_notes, email_log, notifications,
+ * activity_log) cascade-delete automatically per the pipeline schema, so a
+ * single delete cleans up the entire deal record with no orphan rows.
+ *
+ * Caller is responsible for:
+ *   - eligibility (use canDeleteQuote() below — only declined quotes or
+ *     quotes never viewed by the customer are safe to delete; live customer
+ *     engagement should not be silently destroyed)
+ *   - ownership (the rep should only see their own quotes in My Deals; admins
+ *     can delete any quote per role policy)
+ *   - lead reset (if the deal was converted from a Distributor Lead, also
+ *     call unstampConvertedLead() so the lead status returns to active and
+ *     the rep can re-convert if needed)
+ */
+export async function deleteDeal(dealId) {
+  if (!dealPipeline) {
+    return { error: { message: 'Deal pipeline not configured.' } };
+  }
+  if (!dealId) {
+    return { error: { message: 'Missing deal id.' } };
+  }
+  const { error } = await dealPipeline
+    .from('deals')
+    .delete()
+    .eq('id', dealId);
+  return { error };
+}
+
+/**
+ * Pure eligibility check: can this quote be safely deleted?
+ *
+ * Rule (set by Loren, May 2026): only quotes that are declined OR have no
+ * customer activity are deletable. The protection is for live customer
+ * engagement — a quote that's been viewed but is still pending decision,
+ * or a quote where the customer accepted (lease/finance/purchase/loan),
+ * shouldn't disappear from the rep's view by a misclick. Direct-submit
+ * deals (is_quote=false) are never deletable from this path because the
+ * UI only exposes the action on quotes.
+ */
+export function canDeleteQuote(row) {
+  if (!row || row.is_quote !== true) return false;
+  const declined = row.customer_decision === 'declined';
+  const neverViewed = !row.quote_first_viewed_at;
+  return declined || neverViewed;
+}
+
+/**
  * Generate a new quote number via the DB function. Returns `Q-YYYY-NNNN`.
  * The DB-side function is atomic (insert..on conflict do update returning),
  * so concurrent calls don't collide.

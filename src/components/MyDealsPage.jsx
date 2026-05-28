@@ -5,6 +5,8 @@ import {
   fetchDealById,
   recordCustomerDecision,
   resubmitDeal,
+  deleteDeal,
+  canDeleteQuote,
   isDealPipelineConfigured,
 } from '../lib/dealPipeline.js';
 import { DECISIONS, getStepStatuses, isTerminalDenial, PHASE_LABELS, STEP_LABELS } from '../lib/pipelineSteps.js';
@@ -12,7 +14,7 @@ import DealDetailView from './DealDetailView.jsx';
 import {
   fetchMyLeads, isLeadsPortalConfigured, leadStepLabel, bucketLeads,
   leadToDraftState, markLeadInProgress, revertLeadToActive, logLeadActivity,
-  logRepContact, markLeadLost, fetchLeadActivity,
+  logRepContact, markLeadLost, fetchLeadActivity, findLeadByDealId,
 } from '../lib/leadsPortal.js';
 import { useDirector } from '../lib/useDirector.js';
 
@@ -479,6 +481,61 @@ export default function MyDealsPage({ profile, session, navigate }) {
     return { data };
   }
 
+  /**
+   * Delete a quote permanently. Eligibility is enforced both at the UI layer
+   * (button only renders when canDeleteQuote returns true) and again here as
+   * defense in depth — never trust the UI to gate destructive ops.
+   *
+   * Order of operations matters:
+   *   1. Reset the originating Distributor Lead first, if any. The lead
+   *      points to the deal via lead.deal_id; if we destroyed the deal
+   *      before resetting the lead, the lead would be stranded showing
+   *      status='won' with a dangling deal_id. Best-effort — failures here
+   *      log a warning but don't block the deletion the rep asked for.
+   *   2. Delete the deal row. FK cascades clean up activity/revisions/
+   *      bundles/notifications automatically (verified against the
+   *      pipeline schema).
+   *   3. Remove the row from local state so the UI reflects the deletion
+   *      without waiting for a full refetch.
+   */
+  async function handleDeleteQuote(row) {
+    if (!canDeleteQuote(row)) {
+      window.alert("This quote can't be deleted — only declined quotes or quotes the customer hasn't viewed are eligible.");
+      return { error: 'not eligible' };
+    }
+
+    // 1) If this deal came from a converted lead, reset the lead first.
+    //    Best-effort — leads-portal hiccups shouldn't block the delete.
+    try {
+      const { data: lead } = await findLeadByDealId(row.id);
+      if (lead?.id) {
+        await revertLeadToActive(lead.id);
+        await logLeadActivity(
+          lead.id,
+          'ronnoco_rep',
+          'Quote deleted — lead returned to active',
+          null,
+          null,
+          `Deal ${row.quote_number || row.id} was deleted by the rep; lead reopened for re-conversion.`,
+        );
+      }
+    } catch (err) {
+      // Don't block the user's destructive action over a logging miss.
+      console.warn('Lead reset on delete failed (non-fatal):', err);
+    }
+
+    // 2) Delete the deal (cascades to activity/revisions/bundles/notifications).
+    const { error } = await deleteDeal(row.id);
+    if (error) {
+      window.alert(`Could not delete quote: ${error.message}`);
+      return { error };
+    }
+
+    // 3) Drop the row from local state so the UI updates immediately.
+    setSubmissions((prev) => prev.filter((s) => s.id !== row.id));
+    return { data: { ok: true } };
+  }
+
   /* ─── Render ─── */
 
   const filteredSubmissions = submissions.filter((row) => {
@@ -658,6 +715,7 @@ export default function MyDealsPage({ profile, session, navigate }) {
           onEditQuote={handleEditQuote}
           onDecision={handleDecision}
           onResubmit={openResubmitModal}
+          onDelete={handleDeleteQuote}
         />
       )}
 
@@ -1623,7 +1681,7 @@ function DraftRow({ draft, onResume, onDelete, onRename }) {
 
 /* ───────────────────────── Submissions section ───────────────────────── */
 
-function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilterChange, configured, expandedId, onToggleExpand, onEditQuote, onDecision, onResubmit }) {
+function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilterChange, configured, expandedId, onToggleExpand, onEditQuote, onDecision, onResubmit, onDelete }) {
   // Counts for the filter pills come from totalCount (unfiltered) so the
   // numbers don't shift as the rep flips between filters.
   return (
@@ -1676,6 +1734,7 @@ function SubmissionsSection({ rows, totalCount, loading, error, filter, onFilter
                 onEditQuote={onEditQuote}
                 onDecision={onDecision}
                 onResubmit={onResubmit}
+                onDelete={onDelete}
               />
             ))}
           </ul>
@@ -1701,7 +1760,7 @@ function EmptySubmissionsState() {
   );
 }
 
-function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision, onResubmit }) {
+function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision, onResubmit, onDelete }) {
   const isQuote = row.is_quote === true;
   const createdRelative = formatRelativeTime(row.created_at);
   const customerName =
@@ -1793,6 +1852,7 @@ function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision, onRes
             onEditQuote={onEditQuote}
             onDecision={onDecision}
             onResubmit={onResubmit}
+            onDelete={onDelete}
           />
         </div>
       )}
@@ -1813,7 +1873,7 @@ function SubmissionRow({ row, expanded, onToggle, onEditQuote, onDecision, onRes
  *   - For deals: a small note pointing reps to the Pipeline dashboard for
  *     any further edits
  */
-function SubmissionDetail({ row, isQuote, onEditQuote, onDecision, onResubmit }) {
+function SubmissionDetail({ row, isQuote, onEditQuote, onDecision, onResubmit, onDelete }) {
   return (
     <div className="p-4 md:p-5 space-y-5">
       {/* Phase stepper — only render when phase is in {leasing, ops, pending_director}.
@@ -1851,7 +1911,7 @@ function SubmissionDetail({ row, isQuote, onEditQuote, onDecision, onResubmit })
 
       {/* Actions — different for quotes vs deals */}
       {isQuote ? (
-        <QuoteActions row={row} onEditQuote={onEditQuote} onDecision={onDecision} />
+        <QuoteActions row={row} onEditQuote={onEditQuote} onDecision={onDecision} onDelete={onDelete} />
       ) : (
         <DealActions row={row} onResubmit={onResubmit} />
       )}
@@ -1917,20 +1977,38 @@ function StepperNode({ label, status }) {
 
 /* ───────────────────────── Quote actions + decision form ───────────────────────── */
 
-function QuoteActions({ row, onEditQuote, onDecision }) {
+function QuoteActions({ row, onEditQuote, onDecision, onDelete }) {
   const url = buildQuoteUrl(row.quote_number, row.quote_token);
   const [copied, setCopied] = useState(false);
+  // Confirmation state for the destructive Delete action. Two-step
+  // confirmation (button → modal → confirm) protects against misclicks on
+  // an irreversible operation.
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   // Only render the decision form when no decision has been recorded yet.
   // Once a decision exists, the deal has moved phases; further changes
   // happen in the Pipeline dashboard, not here.
   const showDecisionForm = !row.customer_decision || row.customer_decision === 'pending';
 
+  // Eligibility — only declined quotes or quotes the customer hasn't viewed.
+  // canDeleteQuote re-checks at submit time too (defense in depth).
+  const deletable = canDeleteQuote(row);
+
   function copyLink() {
     navigator.clipboard?.writeText(url).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     });
+  }
+
+  async function confirmDelete() {
+    setDeleting(true);
+    const result = await onDelete(row);
+    setDeleting(false);
+    if (!result?.error) setConfirmingDelete(false);
+    // Error path already surfaced an alert in handleDeleteQuote; keep the
+    // modal open so the rep sees the context.
   }
 
   return (
@@ -1967,6 +2045,26 @@ function QuoteActions({ row, onEditQuote, onDecision }) {
         >
           {copied ? '✓ Link copied' : 'Copy link'}
         </button>
+
+        {/* Delete — only renders for declined quotes or quotes the customer
+            hasn't viewed. Subdued red styling so it doesn't compete with the
+            primary actions but is still findable. ml-auto pushes it to the
+            right end of the row to visually separate it from the primary
+            actions. Opens a confirmation modal rather than firing on click. */}
+        {deletable && (
+          <button
+            onClick={() => setConfirmingDelete(true)}
+            className="px-3 py-1.5 border border-red-200 bg-white text-red-700 text-xs font-medium rounded
+                       hover:bg-red-50 hover:border-red-300 transition-colors whitespace-nowrap
+                       inline-flex items-center gap-1.5 ml-auto"
+            title="Permanently delete this quote"
+          >
+            <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0 1 16.138 21H7.862a2 2 0 0 1-1.995-1.858L5 7m5 4v6m4-6v6M1 7h22M9 7V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v3" />
+            </svg>
+            Delete
+          </button>
+        )}
       </div>
 
       {/* Cover note (if any) — useful context when deciding what to edit */}
@@ -1982,6 +2080,54 @@ function QuoteActions({ row, onEditQuote, onDecision }) {
         <DecisionForm row={row} onDecision={onDecision} />
       ) : (
         <DecisionSummary row={row} />
+      )}
+
+      {/* Delete-confirmation modal. Renders at the page level (fixed inset)
+          so it overlays everything. Click-outside cancels; the cancel/delete
+          buttons disable themselves while the request is in flight. */}
+      {confirmingDelete && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/40"
+          onClick={() => !deleting && setConfirmingDelete(false)}
+          role="dialog"
+          aria-modal="true"
+        >
+          <div
+            className="bg-white rounded-lg shadow-xl max-w-md w-full p-5"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-base font-medium text-slate-900 mb-2">
+              Delete this quote?
+            </h3>
+            <p className="text-sm text-slate-700 mb-1">
+              <span className="font-mono font-medium">{row.quote_number}</span>
+              {row.store_name && <> — {row.store_name}</>}
+            </p>
+            <p className="text-sm text-slate-600 mb-4">
+              This permanently removes the quote and all its history (revisions,
+              activity log, customer-decision record). The customer-facing link
+              will stop working. This cannot be undone.
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setConfirmingDelete(false)}
+                disabled={deleting}
+                className="px-3 py-1.5 border border-page-300 bg-white text-slate-700 text-sm font-medium rounded
+                           hover:bg-page-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={confirmDelete}
+                disabled={deleting}
+                className="px-3 py-1.5 bg-red-600 text-white text-sm font-medium rounded
+                           hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              >
+                {deleting ? 'Deleting…' : 'Delete permanently'}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
