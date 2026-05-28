@@ -2370,6 +2370,7 @@ ${repName}`;
 
       {pickerOpen && (
         <EquipmentPicker
+          userId={session?.user?.id || null}
           allowedEquipmentIds={allowedEquipmentIds}
           scopeLabel={
             bundleMode

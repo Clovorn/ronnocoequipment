@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { supabase } from '../lib/supabase.js';
+import { useFavorites } from '../lib/useFavorites.js';
 
 /**
  * EquipmentPicker — modal for selecting an equipment item from the catalog.
@@ -18,12 +19,22 @@ import { supabase } from '../lib/supabase.js';
  *     pre-loaded core items.
  *   - scopeLabel: optional string shown in the header to explain the filter
  *     (e.g. "Showing items eligible for this bundle").
+ *
+ * Favorites (v34):
+ *   - userId: optional uuid. When provided, the picker loads the rep's
+ *     favorited items and offers a "Favorites" filter toggle plus a star
+ *     marker on favorited rows — a fast path to the gear a rep sells
+ *     regularly. Favorites intersect with the bundle filter when both apply.
  */
-export default function EquipmentPicker({ onPick, onClose, multiSelect = true, allowedEquipmentIds = null, scopeLabel = null }) {
+export default function EquipmentPicker({ onPick, onClose, multiSelect = true, allowedEquipmentIds = null, scopeLabel = null, userId = null }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [vendorFilter, setVendorFilter] = useState('');
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+
+  const { favoriteIds, loading: favLoading } = useFavorites(userId);
+  const hasFavorites = favoriteIds.size > 0;
 
   useEffect(() => {
     let cancelled = false;
@@ -48,11 +59,14 @@ export default function EquipmentPicker({ onPick, onClose, multiSelect = true, a
     return [...set].sort();
   }, [items]);
 
-  // Filter by search + vendor + (in bundle mode) by allowed equipment ids
+  // Filter by favorites + search + vendor + (in bundle mode) by allowed equipment ids
   const filtered = useMemo(() => {
     let list = items;
     if (allowedEquipmentIds instanceof Set && allowedEquipmentIds.size > 0) {
       list = list.filter((it) => allowedEquipmentIds.has(it.id));
+    }
+    if (favoritesOnly && hasFavorites) {
+      list = list.filter((it) => favoriteIds.has(it.id));
     }
     if (vendorFilter) list = list.filter((it) => it.vendor === vendorFilter);
     if (!search.trim()) return list.slice(0, 100);
@@ -62,7 +76,13 @@ export default function EquipmentPicker({ onPick, onClose, multiSelect = true, a
       (it.sku || '').toLowerCase().includes(q) ||
       (it.model || '').toLowerCase().includes(q)
     ).slice(0, 100);
-  }, [items, search, vendorFilter, allowedEquipmentIds]);
+  }, [items, search, vendorFilter, allowedEquipmentIds, favoritesOnly, hasFavorites, favoriteIds]);
+
+  // If the rep clears their last favorite while the filter is on, drop back
+  // to the full list so they aren't stuck looking at an empty picker.
+  useEffect(() => {
+    if (favoritesOnly && !favLoading && !hasFavorites) setFavoritesOnly(false);
+  }, [favoritesOnly, favLoading, hasFavorites]);
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape') onClose(); };
@@ -114,14 +134,52 @@ export default function EquipmentPicker({ onPick, onClose, multiSelect = true, a
             <option value="">All vendors</option>
             {vendors.map((v) => <option key={v} value={v}>{v}</option>)}
           </select>
+
+          {/* v34: Favorites quick-filter. Only shown when the rep actually has
+              favorites — otherwise it's dead UI. Lets a rep jump straight to
+              the gear they sell regularly. */}
+          {userId && hasFavorites && (
+            <div className="flex items-center gap-1.5 pt-0.5">
+              <button
+                type="button"
+                onClick={() => setFavoritesOnly(false)}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors
+                  ${!favoritesOnly
+                    ? 'bg-navy-900 text-chalk-50'
+                    : 'bg-white border border-page-200 text-slate-600 hover:bg-navy-50'}`}
+              >
+                All equipment
+              </button>
+              <button
+                type="button"
+                onClick={() => setFavoritesOnly(true)}
+                className={`px-3 py-1.5 rounded text-xs font-medium transition-colors flex items-center gap-1.5
+                  ${favoritesOnly
+                    ? 'bg-accent-500 text-white'
+                    : 'bg-white border border-page-200 text-slate-600 hover:bg-navy-50'}`}
+              >
+                <svg className="w-3.5 h-3.5" fill={favoritesOnly ? 'currentColor' : 'none'} stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                  <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                </svg>
+                My favorites
+                <span className="font-mono opacity-80">({favoriteIds.size})</span>
+              </button>
+            </div>
+          )}
         </div>
 
         <div className="flex-1 overflow-y-auto">
           {loading && <div className="p-6 text-center text-sm text-slate-500">Loading…</div>}
           {!loading && filtered.length === 0 && (
-            <div className="p-6 text-center text-sm text-slate-500">No matches.</div>
+            <div className="p-6 text-center text-sm text-slate-500">
+              {favoritesOnly
+                ? 'None of your favorites match this search. Star items in the Catalog to build your favorites list.'
+                : 'No matches.'}
+            </div>
           )}
-          {!loading && filtered.map((it) => (
+          {!loading && filtered.map((it) => {
+            const fav = favoriteIds.has(it.id);
+            return (
             <button
               key={it.id}
               onClick={() => onPick(it)}
@@ -129,7 +187,14 @@ export default function EquipmentPicker({ onPick, onClose, multiSelect = true, a
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-medium text-slate-900 truncate">{it.description}</div>
+                  <div className="flex items-center gap-1.5">
+                    {fav && (
+                      <svg className="w-3.5 h-3.5 text-accent-500 flex-shrink-0" fill="currentColor" viewBox="0 0 24 24" aria-label="Favorite">
+                        <path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z" />
+                      </svg>
+                    )}
+                    <div className="text-sm font-medium text-slate-900 truncate">{it.description}</div>
+                  </div>
                   <div className="flex items-center gap-2 mt-0.5 text-[10px] text-slate-500 flex-wrap">
                     <span className="font-mono">{it.sku}</span>
                     {it.vendor && <span>· {it.vendor}</span>}
@@ -151,7 +216,8 @@ export default function EquipmentPicker({ onPick, onClose, multiSelect = true, a
                 </div>
               </div>
             </button>
-          ))}
+            );
+          })}
         </div>
 
         {multiSelect && (
