@@ -22,6 +22,19 @@ import EquipmentPicker from './EquipmentPicker.jsx';
 
 const formatUSD = (n) => `$${(n ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
+// Small pure utility helpers shared across validate, submitDeal, and
+// buildBasePayload. Originally these lived inside buildBasePayload, which
+// made the other call sites throw `ReferenceError: trimOrNull is not defined`
+// at runtime — a real bug that silently blocked all submissions for any rep
+// who triggered the validate() deal_type check or the submitDeal() director-
+// approval branch. Hoisting them to module scope fixes that and also lets
+// us share one source of truth for "treat empty strings as null."
+const trimOrNull = (v) => {
+  const t = String(v || '').trim();
+  return t || null;
+};
+const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
+
 /* ───────────────────────── Pricing basis ───────────────────────── */
 
 /**
@@ -832,11 +845,6 @@ export default function DealBuilder({ profile, session, navigate, draftId = null
    * The two paths set different phase/step/quote fields on top of this base.
    */
   function buildBasePayload() {
-    const numOrNull = (v) => (v === '' || v == null ? null : Number(v));
-    const trimOrNull = (v) => {
-      const t = String(v || '').trim();
-      return t || null;
-    };
     return {
       // Customer contact (the "customer" name comes from the primary contact)
       first_name:            trimOrNull(draft.contact_first_name),
